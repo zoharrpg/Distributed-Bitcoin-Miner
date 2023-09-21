@@ -2,9 +2,26 @@
 
 package lsp
 
-import "errors"
+import (
+	"errors"
+
+	"encoding/json"
+
+	"github.com/cmu440/lspnet"
+)
+
+const MAX_LENGTH = 2000
 
 type client struct {
+	conn          *lspnet.UDPConn
+	connection_id int
+	// for write, send message to server
+	message_q chan Message
+	// for read from server
+	server_message chan Message
+	// seqNum
+	sn int
+
 	// TODO: implement this!
 }
 
@@ -22,21 +39,84 @@ type client struct {
 // hostport is a colon-separated string identifying the server's host address
 // and port number (i.e., "localhost:9999").
 func NewClient(hostport string, initialSeqNum int, params *Params) (Client, error) {
-	return nil, errors.New("not yet implemented")
+	addr, err := lspnet.ResolveUDPAddr("udp", hostport)
+	if err != nil {
+		return nil, err
+	}
+	connection, err := lspnet.DialUDP("udp", nil, addr)
+	if err != nil {
+		return nil, err
+	}
+	initial_message := *NewConnect(initialSeqNum)
+	mar_message, err := json.Marshal(initial_message)
+
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = connection.Write(mar_message)
+
+	if err != nil {
+		return nil, err
+	}
+	// length
+	read_message := make([]byte, MAX_LENGTH)
+
+	_, err = connection.Read(read_message)
+	if err != nil {
+		return nil, err
+	}
+	var ack_message Message
+	json.Unmarshal(read_message, &ack_message)
+
+	if ack_message.Type != MsgAck {
+		return nil, errors.New("Ack message error")
+	}
+
+	id := ack_message.ConnID
+
+	c := client{
+		conn:           connection,
+		connection_id:  id,
+		message_q:      make(chan Message),
+		server_message: make(chan Message),
+		sn:             initialSeqNum,
+	}
+	go c.Mainroutine()
+
+	return &c, nil
+}
+func (c *client) Mainroutine() {
+
+}
+func (c *client) Readroutine() {
+
 }
 
 func (c *client) ConnID() int {
-	return -1
+	return c.connection_id
 }
 
 func (c *client) Read() ([]byte, error) {
 	// TODO: remove this line when you are ready to begin implementing this method.
-	select {} // Blocks indefinitely.
-	return nil, errors.New("not yet implemented")
+	select {
+	case message := <-c.server_message:
+		return message.Payload, nil
+
+	} // Blocks indefinitely.
+
+	//return nil, errors.New("not yet implemented")
 }
 
 func (c *client) Write(payload []byte) error {
-	return errors.New("not yet implemented")
+	c.sn++
+	checksum := CalculateChecksum(c.ConnID(), c.sn, len(payload), payload)
+
+	message := NewData(c.connection_id, c.sn, len(payload), payload, checksum)
+
+	c.message_q <- *message
+	return nil
+	// return errors.New("not yet implemented")
 }
 
 func (c *client) Close() error {

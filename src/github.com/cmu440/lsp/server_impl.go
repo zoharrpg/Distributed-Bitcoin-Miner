@@ -2,9 +2,16 @@
 
 package lsp
 
-import "errors"
+import (
+	"errors"
+	"strconv"
+
+	"github.com/cmu440/lspnet"
+)
 
 type server struct {
+	client_connection chan lspnet.UDPConn
+
 	// TODO: Implement this!
 }
 
@@ -14,8 +21,28 @@ type server struct {
 // fixed intervals, synchronizing events using a for-select loop like you saw in
 // project 0, etc.) and immediately return. It should return a non-nil error if
 // there was an error resolving or listening on the specified port number.
+
 func NewServer(port int, params *Params) (Server, error) {
-	return nil, errors.New("not yet implemented")
+	se := server{
+		client_connection: make(chan lspnet.UDPConn),
+	}
+	addr, err := lspnet.ResolveUDPAddr("udp", "127.0.0.1:"+strconv.Itoa(port))
+	if err != nil {
+		return nil, err
+	}
+	conn, err := lspnet.ListenUDP("udp", addr)
+
+	if err != nil {
+		return nil, err
+	}
+	se.client_connection <- *conn
+
+	go se.Mainroutine()
+
+	return &se, err
+}
+func (se *server) Mainroutine() {
+	return
 }
 
 func (s *server) Read() (int, []byte, error) {
