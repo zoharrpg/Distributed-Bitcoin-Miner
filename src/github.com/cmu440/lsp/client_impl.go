@@ -4,6 +4,7 @@ package lsp
 
 import (
 	"errors"
+	"fmt"
 
 	"encoding/json"
 
@@ -20,7 +21,9 @@ type client struct {
 	// for read from server
 	server_message chan Message
 	// seqNum
-	sn int
+	sn                int
+	close_signal_main chan int
+	close_signal_read chan int
 
 	// TODO: implement this!
 }
@@ -76,20 +79,63 @@ func NewClient(hostport string, initialSeqNum int, params *Params) (Client, erro
 	id := ack_message.ConnID
 
 	c := client{
-		conn:           connection,
-		connection_id:  id,
-		message_q:      make(chan Message),
-		server_message: make(chan Message),
-		sn:             initialSeqNum,
+		conn:              connection,
+		connection_id:     id,
+		message_q:         make(chan Message),
+		server_message:    make(chan Message),
+		sn:                initialSeqNum,
+		close_signal_main: make(chan int),
+		close_signal_read: make(chan int),
 	}
 	go c.Mainroutine()
+	go c.Readroutine()
 
 	return &c, nil
 }
-func (c *client) Mainroutine() {
+func (c *client) Mainroutine() error {
+	for {
+		select {
+		case message := <-c.message_q:
+			mar_message, _ := json.Marshal(message)
+
+			_, err := c.conn.Write(mar_message)
+			if err != nil {
+				fmt.Printf("Write error")
+				return err
+			}
+
+		case <-c.close_signal_main:
+
+			c.conn.Close()
+			return nil
+
+		}
+
+	}
 
 }
-func (c *client) Readroutine() {
+func (c *client) Readroutine() error {
+
+	for {
+		select {
+		case <-c.close_signal_read:
+			return nil
+		default:
+			read_message := make([]byte, MAX_LENGTH)
+
+			_, err := c.conn.Read(read_message)
+			if err != nil {
+				fmt.Printf("read error\n")
+				return err
+			}
+			var message Message
+			json.Unmarshal(read_message, &message)
+
+			c.server_message <- message
+
+		}
+
+	}
 
 }
 
@@ -120,5 +166,7 @@ func (c *client) Write(payload []byte) error {
 }
 
 func (c *client) Close() error {
-	return errors.New("not yet implemented")
+	c.close_signal_main <- 1
+	c.close_signal_read <- 1
+	return nil
 }

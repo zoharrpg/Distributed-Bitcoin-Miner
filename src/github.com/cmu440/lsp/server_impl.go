@@ -10,7 +10,10 @@ import (
 )
 
 type server struct {
+	conn              *lspnet.UDPConn
 	client_connection chan lspnet.UDPConn
+	close_signal_main chan int
+	close_signal_read chan int
 
 	// TODO: Implement this!
 }
@@ -23,10 +26,7 @@ type server struct {
 // there was an error resolving or listening on the specified port number.
 
 func NewServer(port int, params *Params) (Server, error) {
-	se := server{
-		client_connection: make(chan lspnet.UDPConn),
-	}
-	addr, err := lspnet.ResolveUDPAddr("udp", "127.0.0.1:"+strconv.Itoa(port))
+	addr, err := lspnet.ResolveUDPAddr("udp", ":"+strconv.Itoa(port))
 	if err != nil {
 		return nil, err
 	}
@@ -35,13 +35,22 @@ func NewServer(port int, params *Params) (Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	se.client_connection <- *conn
+
+	se := server{
+		conn:              conn,
+		client_connection: make(chan lspnet.UDPConn),
+		close_signal_main: make(chan int),
+		close_signal_read: make(chan int),
+	}
 
 	go se.Mainroutine()
 
 	return &se, err
 }
 func (se *server) Mainroutine() {
+	for {
+		select {}
+	}
 	return
 }
 
