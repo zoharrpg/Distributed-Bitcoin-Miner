@@ -204,18 +204,20 @@ func (c *client) mainRoutine() {
 func (c *client) readRoutine() {
 	readMessage := make([]byte, MAX_LENGTH)
 	for {
-		_, err := c.conn.Read(readMessage)
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
+		select {
+		case <-c.close_signal_read:
+			return nil // TODO: remove select case
 
-		var message Message
-		err = json.Unmarshal(readMessage, &message)
-		if err != nil {
-			fmt.Println(err)
-		}
-		c.rawMessages <- message
+		default:
+			read_message := make([]byte, MAX_LENGTH)
+
+			_, err := c.conn.Read(read_message)
+			if err != nil {
+				fmt.Printf("read error\n")
+				return err
+			}
+			var message Message
+			json.Unmarshal(read_message, &message)
 
 		// TODO: check if it is necessary to clear the buffer
 		for i := range readMessage {
