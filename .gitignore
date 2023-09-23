@@ -2,4 +2,4 @@ miner
 client
 server
 .DS_Store
-.idea
+./idea
