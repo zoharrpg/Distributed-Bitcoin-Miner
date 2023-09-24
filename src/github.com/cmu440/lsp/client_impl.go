@@ -219,9 +219,10 @@ func (c *client) readRoutine() {
 			var message Message
 			json.Unmarshal(read_message, &message)
 
-		// TODO: check if it is necessary to clear the buffer
-		for i := range readMessage {
-			readMessage[i] = 0
+			// TODO: check if it is necessary to clear the buffer
+			for i := range readMessage {
+				readMessage[i] = 0
+			}
 		}
 	}
 }

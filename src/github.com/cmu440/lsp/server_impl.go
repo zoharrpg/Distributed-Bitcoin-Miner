@@ -9,51 +9,69 @@ import (
 	"strconv"
 
 	"container/list"
+
 	"github.com/cmu440/lspnet"
 )
 
 type server struct {
+	// server listener
 	listener *lspnet.UDPConn
-
+	// receive message from client channel
 	packet_q chan packet_message
-
+	// close server signal
 	close_server chan int
-
+	// close client signal
 	close_client chan int
+
 	// assign client id
 	client_id_counter int
 	// Read channel
-	read_q          chan Message
-	client_info_map map[client_info]*list.List
+	read_q chan Message
 
+	// ID to client seq map, to get client seq by connid
 	connID_to_seq map[int]*client_seq
-	// send message from server queue channel
+	// send message from server queue channel for send message from server
 	server_message_q chan server_packet
 
+	// read counter for each connid
 	connid_to_readcounter map[int]int
-	connid_to_outorder    map[int]*list.List
-
+	// outorder list for each connid
+	connid_to_outorder map[int]*list.List
+	// store ordered message
 	read_list *list.List
-
+	// send read signal
 	read_request chan int
-
+	// read error signal
 	read_error chan int
 
 	// TODO: Implement this!
 }
 
+/*
+packet message from client struct
+store meessage and connection address
+*/
 type packet_message struct {
 	packet_addr *lspnet.UDPAddr
 	message     Message
 }
+
+/*
+*
+client info struct for store connId and connection address
+*/
 type client_info struct {
 	packet_addr *lspnet.UDPAddr
 	conn_id     int
 }
+
+/* store client seq with address */
 type client_seq struct {
 	packet_addr *lspnet.UDPAddr
 	server_seq  int
 }
+
+/*store client and connect id and c*/
 type server_packet struct {
 	c      client_seq
 	packet Message
@@ -86,7 +104,6 @@ func NewServer(port int, params *Params) (Server, error) {
 		close_client:      make(chan int),
 		client_id_counter: 1,
 		read_q:            make(chan Message),
-		client_info_map:   make(map[client_info]*list.List),
 
 		connID_to_seq:         make(map[int]*client_seq),
 		server_message_q:      make(chan server_packet),
@@ -114,10 +131,11 @@ func (s *server) Mainroutine() error {
 
 			switch packet.message.Type {
 			case MsgConnect:
-
-				s.client_info_map[client].Init()
+				// initialize map
 				s.connID_to_seq[client.conn_id] = &client_seq{packet_addr: packet.packet_addr, server_seq: sn}
+				// message start from sn+1
 				s.connid_to_readcounter[client.conn_id] = sn + 1
+
 				s.connid_to_outorder[client.conn_id].Init()
 
 				ack_message := *NewAck(s.client_id_counter, sn)
@@ -136,12 +154,25 @@ func (s *server) Mainroutine() error {
 				// add id counter
 				s.client_id_counter++
 			case MsgData:
+				// if received message match the read counter, just add it to to read_list
 				if sn == s.connid_to_readcounter[client.conn_id] {
 
 					s.read_list.PushBack(packet.message)
 					s.connid_to_readcounter[client.conn_id]++
+					// check if there is an element in outorder list that match the seq number after
+					element := s.Findelement(client.conn_id, s.connid_to_readcounter[client.conn_id])
+
+					// add element until there is no element in outorder list that match seq number
+					for element != nil {
+						s.read_list.PushBack(element.Value.(Message))
+						s.connid_to_readcounter[client.conn_id]++
+
+						element = s.Findelement(client.conn_id, s.connid_to_readcounter[client.conn_id])
+
+					}
 
 				} else {
+					// outorder element
 					s.connid_to_outorder[client.conn_id].PushBack(packet.message)
 
 				}
@@ -163,7 +194,7 @@ func (s *server) Mainroutine() error {
 			case MsgCAck:
 
 			}
-
+			// if send message to client
 		case message_to_client := <-s.server_message_q:
 			mar_message, _ := json.Marshal(message_to_client.packet)
 			_, err := s.listener.WriteToUDP(mar_message, message_to_client.c.packet_addr)
@@ -176,14 +207,17 @@ func (s *server) Mainroutine() error {
 			s.connID_to_seq[message_to_client.connid].server_seq++
 
 		case <-s.close_server:
-
+			s.listener.Close()
+			return nil
+		// close connection for the close client
 		case connId := <-s.close_client:
-			addr := s.connID_to_seq[connId].packet_addr
-			cl := client_info{packet_addr: addr, conn_id: connId}
+			//addr := s.connID_to_seq[connId].packet_addr
+			//cl := client_info{packet_addr: addr, conn_id: connId}
 
-			delete(s.client_info_map, cl)
 			delete(s.connID_to_seq, connId)
-
+			delete(s.connid_to_readcounter, connId)
+			delete(s.connid_to_outorder, connId)
+		// pop message from the read_list
 		case <-s.read_request:
 			if s.read_list.Len() != 0 {
 				head := s.read_list.Front()
@@ -191,21 +225,6 @@ func (s *server) Mainroutine() error {
 				s.read_q <- head.Value.(Message)
 
 			} else {
-				for key, value := range s.connid_to_outorder {
-
-					if value.Len() != 0 {
-						read_counter := s.connid_to_readcounter[key]
-						for e := value.Front(); e != nil; e = e.Next() {
-							m := e.Value.(Message)
-							if m.SeqNum == read_counter {
-								s.connid_to_readcounter[key]++
-								s.read_q <- m
-							}
-
-						}
-					}
-
-				}
 				s.read_error <- 1
 
 			}
@@ -213,6 +232,22 @@ func (s *server) Mainroutine() error {
 	}
 	//return nil
 }
+
+// find next element in out order list that mathc seq number
+func (s *server) Findelement(connid int, seq int) *list.Element {
+	for m := s.connid_to_outorder[connid].Front(); m != nil; m = m.Next() {
+		if m.Value.(Message).SeqNum == seq {
+			s.connid_to_outorder[connid].Remove(m)
+			return m
+
+		}
+
+	}
+	return nil
+
+}
+
+// read message from client
 func (s *server) Readroutine() error {
 	for {
 		tmp := make([]byte, MAX_LENGTH)
@@ -236,6 +271,7 @@ func (s *server) Readroutine() error {
 	}
 }
 
+// read message from server
 func (s *server) Read() (int, []byte, error) {
 
 	// TODO: remove this line when you are ready to begin implementing this method.
@@ -268,8 +304,6 @@ func (s *server) Write(connId int, payload []byte) error {
 
 	}
 	return errors.New("Cannot find connId")
-
-	//return errors.New("not yet implemented")
 }
 
 func (s *server) CloseConn(connId int) error {
@@ -279,5 +313,6 @@ func (s *server) CloseConn(connId int) error {
 
 func (s *server) Close() error {
 	s.close_server <- 1
+
 	return nil
 }

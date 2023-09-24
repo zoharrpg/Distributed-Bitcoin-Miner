@@ -56,19 +56,19 @@ func main() {
 }
 
 func runServer(srv lsp.Server) {
-	for {
-		// Read message from client.
-		if id, payload, err := srv.Read(); err != nil {
-			fmt.Printf("Client %d has died: %s\n", id, err)
-		} else {
-			log.Printf("Server received '%s' from client %d\n", string(payload), id)
-			// Echo message back to client.
-			if err := srv.Write(id, payload); err != nil {
-				// Print an error message and continue...
-				fmt.Printf("Server failed to write to connection %d: %s\n", id, err)
-			} else {
-				log.Printf("Server wrote '%s' to client %d\n", string(payload), id)
-			}
-		}
-	}
+	// for {
+	// 	// Read message from client.
+	// 	if id, payload, err := srv.Read(); err != nil {
+	// 		fmt.Printf("Client %d has died: %s\n", id, err)
+	// 	} else {
+	// 		log.Printf("Server received '%s' from client %d\n", string(payload), id)
+	// 		// Echo message back to client.
+	// 		if err := srv.Write(id, payload); err != nil {
+	// 			// Print an error message and continue...
+	// 			fmt.Printf("Server failed to write to connection %d: %s\n", id, err)
+	// 		} else {
+	// 			log.Printf("Server wrote '%s' to client %d\n", string(payload), id)
+	// 		}
+	// 	}
+	// }
 }
