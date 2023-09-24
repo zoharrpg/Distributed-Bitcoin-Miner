@@ -273,10 +273,10 @@ func (c *client) Write(payload []byte) error {
 		return err
 	}
 	_, err = c.conn.Write(marMessage)
-	c.sendingWindow.AddSeqNum(sn) // TODO: race condition
 	if err != nil {
 		return err
 	}
+	c.sendingWindow.AddSeqNum(sn) // TODO: race condition
 	return nil
 }
 
