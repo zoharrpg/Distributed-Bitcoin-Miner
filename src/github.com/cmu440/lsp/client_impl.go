@@ -14,7 +14,7 @@ import (
 
 const (
 	MAX_LENGTH           = 2000
-	RAW_MESSAGE_LENGTH   = 100
+	RAW_MESSAGE_LENGTH   = 1
 	RECEIVED_WINDOW_SIZE = 0
 )
 
@@ -94,7 +94,8 @@ type client struct {
 	connId             int
 	rawMessages        chan Message // raw message from server
 	readPayloads       chan []byte  // payload from server
-	sendPayloads       chan []byte  // payload to server
+	readRequest        chan struct{}
+	sendPayloads       chan []byte // payload to server
 	sendingWindow      SlidingWindow
 	receivedRecord     []Message
 	sn                 int // seqNum
@@ -127,7 +128,7 @@ func NewClient(hostport string, initialSeqNum int, params *Params) (Client, erro
 		return nil, err
 	}
 
-	connectRequest := *NewConnect(initialSeqNum)
+	connectRequest := NewConnect(initialSeqNum)
 	marConnReq, err := json.Marshal(connectRequest)
 	if err != nil {
 		return nil, err
@@ -140,13 +141,14 @@ func NewClient(hostport string, initialSeqNum int, params *Params) (Client, erro
 
 	// length
 	readMessage := make([]byte, MAX_LENGTH)
-	_, err = connection.Read(readMessage)
+	var n int
+	n, err = connection.Read(readMessage)
 	if err != nil {
 		return nil, err
 	}
 
-	var ackMessage Message
-	err = json.Unmarshal(readMessage, &ackMessage)
+	ackMessage := Message{}
+	err = json.Unmarshal(readMessage[:n], &ackMessage)
 	if err != nil {
 		return nil, err
 	}
@@ -177,13 +179,15 @@ func NewClient(hostport string, initialSeqNum int, params *Params) (Client, erro
 }
 
 func (c *client) mainRoutine() {
+	sendingSeqNum := c.sn
+	receiveSeqNum := c.sn
 	for {
 		select {
 		case payload, ok := <-c.sendPayloads:
 			if !ok {
 				continue // TODO: resolve this
 			}
-			sn := c.sn + 1
+			sn := sendingSeqNum + 1
 			checksum := CalculateChecksum(c.ConnID(), sn, len(payload), payload)
 			message := NewData(c.connId, sn, len(payload), payload, checksum)
 			marMessage, err := json.Marshal(message)
@@ -194,10 +198,7 @@ func (c *client) mainRoutine() {
 			if err != nil {
 				fmt.Println(err)
 			}
-			c.sn++
-		// case <-c.accessSn:
-		//	 c.sn++
-		//	 c.getSn <- c.sn
+			sendingSeqNum++
 		case message, ok := <-c.rawMessages:
 			if !ok {
 				return // TODO: check if it would successfully return
@@ -219,8 +220,11 @@ func (c *client) mainRoutine() {
 				}
 				c.receivedRecord = append(c.receivedRecord, message)
 				sort.Sort(BySeqNum(c.receivedRecord))
-				c.sendPayloads <- c.receivedRecord[0].Payload
-				c.receivedRecord = c.receivedRecord[1:]
+				if len(c.readPayloads) == 0 && c.receivedRecord[0].SeqNum == receiveSeqNum {
+					c.readPayloads <- c.receivedRecord[0].Payload
+					c.receivedRecord = c.receivedRecord[1:]
+					receiveSeqNum++
+				}
 				// send ack
 				ackMessage := *NewAck(c.connId, message.SeqNum)
 				marAckMessage, err := json.Marshal(ackMessage)
@@ -239,25 +243,25 @@ func (c *client) mainRoutine() {
 }
 
 func (c *client) readRoutine() {
-	readMessage := make([]byte, MAX_LENGTH)
+	readMessage := make([]byte, MAX_LENGTH) // TODO: ask how to implement this
 	for {
-		_, err := c.conn.Read(readMessage)
+		n, err := c.conn.Read(readMessage)
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
 
 		var message Message
-		err = json.Unmarshal(readMessage, &message)
+		err = json.Unmarshal(readMessage[:n], &message)
 		if err != nil {
 			fmt.Println(err)
 		}
 		c.rawMessages <- message
 
 		// TODO: check if it is necessary to clear the buffer
-		for i := range readMessage {
-			readMessage[i] = 0
-		}
+		//for i := range readMessage {
+		//	readMessage[i] = 0
+		//}
 	}
 }
 
