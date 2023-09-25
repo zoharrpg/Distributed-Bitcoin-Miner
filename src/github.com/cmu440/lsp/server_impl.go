@@ -25,8 +25,9 @@ type server struct {
 	connid_to_readcounter map[int]int         // read counter for each connId
 	connid_to_outorder    map[int]*list.List  // outorder list for each connId
 	read_list             *list.List          // store ordered message
-	read_request          chan int            // send read signal
-	read_error            chan int            // read error signal
+	// read_request          chan int            // send read signal
+	read_error  chan int // read error signal
+	read_buffer chan Message
 }
 
 // packet message from client struct
@@ -84,8 +85,9 @@ func NewServer(port int, params *Params) (Server, error) {
 		connid_to_readcounter: make(map[int]int),
 		connid_to_outorder:    make(map[int]*list.List),
 		read_list:             list.New(),
-		read_request:          make(chan int),
-		read_error:            make(chan int),
+		//read_request:          make(chan int),
+		read_error:  make(chan int),
+		read_buffer: make(chan Message, 1),
 	}
 
 	go se.mainRoutine()
@@ -108,16 +110,20 @@ func (s *server) mainRoutine() error {
 				// initialize map
 				s.connID_to_seq[client.connId] = &client_seq{packetAddr: packet.packetAddr, serverSeq: sn}
 				// message start from sn+1
+				fmt.Printf("MsgConnect")
 				s.connid_to_readcounter[client.connId] = sn + 1
 				s.connid_to_outorder[client.connId].Init()
 				ack_message := *NewAck(s.client_id_counter, sn)
 				ack_message_mar, err := json.Marshal(ack_message)
 				if err != nil {
+					fmt.Printf("M error ")
 					return err
+
 				}
 
 				_, err = s.listener.WriteToUDP(ack_message_mar, client.packetAddr)
 				if err != nil {
+					fmt.Printf("write error ")
 					return err
 				}
 				// add id counter
@@ -140,17 +146,25 @@ func (s *server) mainRoutine() error {
 					s.connid_to_outorder[client.connId].PushBack(packet.message)
 				}
 
-				////ack_message := *NewAck(client.conn_id, sn)
-				//
-				////ack_message_mar, err := json.Marshal(ack_message)
-				////if err != nil {
-				//	return err
-				//}
-				//_, err = s.listener.WriteToUDP(ack_message_mar, client.packet_addr)
-				//
-				//if err != nil {
-				//	return err
-				//}
+				if len(s.read_buffer) == 0 {
+					e := s.read_list.Front()
+					s.read_list.Remove(e)
+					read_m := e.Value.(Message)
+					s.read_buffer <- read_m
+
+				}
+
+				ack_message := *NewAck(client.connId, sn)
+
+				ack_message_mar, err := json.Marshal(ack_message)
+				if err != nil {
+					return err
+				}
+				_, err = s.listener.WriteToUDP(ack_message_mar, client.packetAddr)
+
+				if err != nil {
+					return err
+				}
 			case MsgAck:
 				continue
 			case MsgCAck:
@@ -179,17 +193,17 @@ func (s *server) mainRoutine() error {
 			delete(s.connID_to_seq, connId)
 			delete(s.connid_to_readcounter, connId)
 			delete(s.connid_to_outorder, connId)
-		// pop message from the read_list
-		case <-s.read_request:
-			if s.read_list.Len() != 0 {
-				head := s.read_list.Front()
-				s.read_list.Remove(head)
-				s.read_q <- head.Value.(Message)
+			// pop message from the read_list
+			// case <-s.read_request:
 
-			} else {
-				s.read_error <- 1
+			// 	if s.read_list.Len() != 0 {
 
-			}
+			// 		head := s.read_list.Front()
+			// 		s.read_list.Remove(head)
+			// 		s.read_q <- head.Value.(Message)
+
+			// 	}
+
 		}
 	}
 	//return nil
@@ -210,14 +224,18 @@ func (s *server) findElement(connId int, seq int) *list.Element {
 func (s *server) readRoutine() error {
 	for {
 		tmp := make([]byte, MAX_LENGTH)
-		_, addr, err := s.listener.ReadFromUDP(tmp)
+		n, addr, err := s.listener.ReadFromUDP(tmp)
+
+		fmt.Printf("client connenct")
 		if err != nil {
 			return err
 		}
 
 		var message Message
-		err = json.Unmarshal(tmp, &message)
+		err = json.Unmarshal(tmp[:n], &message)
 		if err != nil {
+			fmt.Printf(err.Error())
+			fmt.Printf("UN error")
 			return err
 		}
 		p := packet_message{packetAddr: addr, message: message}
@@ -227,14 +245,19 @@ func (s *server) readRoutine() error {
 
 // read message from server
 func (s *server) Read() (int, []byte, error) {
+	m := <-s.read_buffer
+
+	return m.ConnID, m.Payload, nil
+
 	// TODO: remove this line when you are ready to begin implementing this method.
-	s.read_request <- 1
-	select {
-	case m := <-s.read_q:
-		return m.ConnID, m.Payload, nil
-	case <-s.read_error:
-		return -1, nil, errors.New("read_error")
-	}
+	//s.read_request <- 1
+	// select {
+	// case m := <-s.read_q:
+	// 	return m.ConnID, m.Payload, nil
+	// case <-s.read_error:
+
+	// 	return -1, nil, errors.New("read_error")
+	// }
 }
 
 func (s *server) Write(connId int, payload []byte) error {
