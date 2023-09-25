@@ -5,6 +5,7 @@ package lsp
 import (
 	"errors"
 	"fmt"
+	"sort"
 
 	"encoding/json"
 
@@ -14,7 +15,7 @@ import (
 const (
 	MAX_LENGTH           = 2000
 	RAW_MESSAGE_LENGTH   = 100
-	RECEIVED_WINDOW_SIZE = 10
+	RECEIVED_WINDOW_SIZE = 0
 )
 
 type SlidingWindow struct {
@@ -82,6 +83,12 @@ func (s *SlidingWindow) print() {
 	fmt.Printf("window: %v\n", s.window)
 }
 
+type BySeqNum []Message
+
+func (a BySeqNum) Len() int           { return len(a) }
+func (a BySeqNum) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a BySeqNum) Less(i, j int) bool { return a[i].SeqNum < a[j].SeqNum }
+
 type client struct {
 	conn               *lspnet.UDPConn
 	connId             int
@@ -89,7 +96,7 @@ type client struct {
 	readPayloads       chan []byte  // payload from server
 	sendPayloads       chan []byte  // payload to server
 	sendingWindow      SlidingWindow
-	receivedRecord     SlidingWindow
+	receivedRecord     []Message
 	sn                 int // seqNum
 	accessSn           chan struct{}
 	getSn              chan int
@@ -157,7 +164,7 @@ func NewClient(hostport string, initialSeqNum int, params *Params) (Client, erro
 		readPayloads:       make(chan []byte, RAW_MESSAGE_LENGTH),
 		sendPayloads:       make(chan []byte, RAW_MESSAGE_LENGTH),
 		sendingWindow:      SlidingWindow{window: make([]int, params.WindowSize), size: 0},
-		receivedRecord:     SlidingWindow{window: make([]int, RECEIVED_WINDOW_SIZE), size: 0},
+		receivedRecord:     make([]Message, RECEIVED_WINDOW_SIZE),
 		sn:                 initialSeqNum,
 		accessSn:           make(chan struct{}),
 		getSn:              make(chan int),
@@ -172,18 +179,36 @@ func NewClient(hostport string, initialSeqNum int, params *Params) (Client, erro
 func (c *client) mainRoutine() {
 	for {
 		select {
-		case <-c.accessSn:
+		case payload, ok := <-c.sendPayloads:
+			if !ok {
+				continue // TODO: resolve this
+			}
+			sn := c.sn + 1
+			checksum := CalculateChecksum(c.ConnID(), sn, len(payload), payload)
+			message := NewData(c.connId, sn, len(payload), payload, checksum)
+			marMessage, err := json.Marshal(message)
+			if err != nil {
+				fmt.Println(err)
+			}
+			_, err = c.conn.Write(marMessage)
+			if err != nil {
+				fmt.Println(err)
+			}
 			c.sn++
-			c.getSn <- c.sn
+		// case <-c.accessSn:
+		//	 c.sn++
+		//	 c.getSn <- c.sn
 		case message, ok := <-c.rawMessages:
 			if !ok {
 				return // TODO: check if it would successfully return
 			}
 			switch message.Type {
 			case MsgAck:
-				c.sendingWindow.RemoveSeqNum(message.SeqNum) // TODO: race condition
+				continue
+				// c.sendingWindow.RemoveSeqNum(message.SeqNum) // TODO: race condition
 			case MsgCAck:
-				c.sendingWindow.RemoveBeforeSeqNum(message.SeqNum) // TODO: race condition
+				continue
+				// c.sendingWindow.RemoveBeforeSeqNum(message.SeqNum) // TODO: race condition
 			case MsgData:
 				// If the Read function gets called multiple times, we expect
 				// all messages received from the server to be returned by Read
@@ -192,8 +217,20 @@ func (c *client) mainRoutine() {
 				if message.ConnID != c.connId {
 					continue
 				}
-				c.readPayloads <- message.Payload
+				c.receivedRecord = append(c.receivedRecord, message)
+				sort.Sort(BySeqNum(c.receivedRecord))
+				c.sendPayloads <- c.receivedRecord[0].Payload
+				c.receivedRecord = c.receivedRecord[1:]
 				// send ack
+				ackMessage := *NewAck(c.connId, message.SeqNum)
+				marAckMessage, err := json.Marshal(ackMessage)
+				if err != nil {
+					fmt.Println(err)
+				}
+				_, err = c.conn.Write(marAckMessage)
+				if err != nil {
+					fmt.Println(err)
+				}
 			case MsgConnect:
 				continue // do nothing
 			}
@@ -204,25 +241,22 @@ func (c *client) mainRoutine() {
 func (c *client) readRoutine() {
 	readMessage := make([]byte, MAX_LENGTH)
 	for {
-		select {
-		case <-c.close_signal_read:
-			return nil // TODO: remove select case
+		_, err := c.conn.Read(readMessage)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
 
-		default:
-			read_message := make([]byte, MAX_LENGTH)
+		var message Message
+		err = json.Unmarshal(readMessage, &message)
+		if err != nil {
+			fmt.Println(err)
+		}
+		c.rawMessages <- message
 
-			_, err := c.conn.Read(read_message)
-			if err != nil {
-				fmt.Printf("read error\n")
-				return err
-			}
-			var message Message
-			json.Unmarshal(read_message, &message)
-
-			// TODO: check if it is necessary to clear the buffer
-			for i := range readMessage {
-				readMessage[i] = 0
-			}
+		// TODO: check if it is necessary to clear the buffer
+		for i := range readMessage {
+			readMessage[i] = 0
 		}
 	}
 }
@@ -261,25 +295,13 @@ func (c *client) Read() ([]byte, error) {
 // Write must either return a non-nil error, or never return anything.
 // TODO: what if the server is closed?
 func (c *client) Write(payload []byte) error {
-	c.accessSn <- struct{}{}
-	sn := <-c.getSn
-	for {
-		// TODO: race condition check
-		if c.sendingWindow.getSize() < c.MaxUnackedMessages && sn-c.sendingWindow.getHead() < len(c.sendingWindow.window) {
-			break
-		}
-	}
-	checksum := CalculateChecksum(c.ConnID(), sn, len(payload), payload)
-	message := NewData(c.connId, sn, len(payload), payload, checksum)
-	marMessage, err := json.Marshal(message)
-	if err != nil {
-		return err
-	}
-	_, err = c.conn.Write(marMessage)
-	c.sendingWindow.AddSeqNum(sn) // TODO: race condition
-	if err != nil {
-		return err
-	}
+	// for {
+	// 	// TODO: race condition check
+	// 	if c.sendingWindow.getSize() < c.MaxUnackedMessages && sn-c.sendingWindow.getHead() < len(c.sendingWindow.window) {
+	// 		break
+	// 	}
+	// }
+	c.sendPayloads <- payload
 	return nil
 }
 
