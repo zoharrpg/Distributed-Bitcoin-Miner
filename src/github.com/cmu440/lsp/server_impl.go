@@ -85,9 +85,9 @@ func NewServer(port int, params *Params) (Server, error) {
 		connid_to_readcounter: make(map[int]int),
 		connid_to_outorder:    make(map[int]*list.List),
 		read_list:             list.New(),
-		//read_request:          make(chan int),
-		read_error:  make(chan int),
-		read_buffer: make(chan Message, 1),
+		read_request:          make(chan int),
+		read_error:            make(chan int),
+		read_buffer:           make(chan Message, 1),
 	}
 
 	go se.mainRoutine()
@@ -108,11 +108,10 @@ func (s *server) mainRoutine() error {
 			switch packet.message.Type {
 			case MsgConnect:
 				// initialize map
-				s.connID_to_seq[client.connId] = &client_seq{packetAddr: packet.packetAddr, serverSeq: sn}
+				s.connID_to_seq[s.client_id_counter] = &client_seq{packetAddr: packet.packetAddr, serverSeq: sn}
 				// message start from sn+1
-				fmt.Printf("MsgConnect")
-				s.connid_to_readcounter[client.connId] = sn + 1
-				s.connid_to_outorder[client.connId].Init()
+				s.connid_to_readcounter[s.client_id_counter] = sn + 1
+				s.connid_to_outorder[s.client_id_counter] = list.New()
 				ack_message := *NewAck(s.client_id_counter, sn)
 				ack_message_mar, err := json.Marshal(ack_message)
 				if err != nil {
@@ -129,8 +128,10 @@ func (s *server) mainRoutine() error {
 				// add id counter
 				s.client_id_counter++
 			case MsgData:
-				// if received message match the read counter, just add it to to read_list
+
+				// if received message match the read counter, just add it to read_list
 				if sn == s.connid_to_readcounter[client.connId] {
+
 					s.read_list.PushBack(packet.message)
 					s.connid_to_readcounter[client.connId]++
 					// check if there is an element in outorder list that match the seq number after
@@ -142,16 +143,22 @@ func (s *server) mainRoutine() error {
 						element = s.findElement(client.connId, s.connid_to_readcounter[client.connId])
 					}
 				} else {
+					if s.connid_to_outorder[client.connId] == nil {
+						s.connid_to_outorder[client.connId] = list.New()
+					}
 					// outorder element
 					s.connid_to_outorder[client.connId].PushBack(packet.message)
 				}
 
 				if len(s.read_buffer) == 0 {
-					e := s.read_list.Front()
-					s.read_list.Remove(e)
-					read_m := e.Value.(Message)
-					s.read_buffer <- read_m
 
+					e := s.read_list.Front()
+
+					if e != nil {
+						s.read_list.Remove(e)
+						read_m := e.Value.(Message)
+						s.read_buffer <- read_m
+					}
 				}
 
 				ack_message := *NewAck(client.connId, sn)
@@ -161,6 +168,8 @@ func (s *server) mainRoutine() error {
 					return err
 				}
 				_, err = s.listener.WriteToUDP(ack_message_mar, client.packetAddr)
+
+				// fmt.Println("send ack")
 
 				if err != nil {
 					return err
@@ -194,7 +203,6 @@ func (s *server) mainRoutine() error {
 			delete(s.connid_to_readcounter, connId)
 			delete(s.connid_to_outorder, connId)
 			// pop message from the read_list
-			// case <-s.read_request:
 
 			// 	if s.read_list.Len() != 0 {
 
@@ -226,7 +234,7 @@ func (s *server) readRoutine() error {
 		tmp := make([]byte, MAX_LENGTH)
 		n, addr, err := s.listener.ReadFromUDP(tmp)
 
-		fmt.Printf("client connenct")
+		//fmt.Printf("client connenct")
 		if err != nil {
 			return err
 		}
@@ -273,11 +281,13 @@ func (s *server) Write(connId int, payload []byte) error {
 }
 
 func (s *server) CloseConn(connId int) error {
+	fmt.Println("Server: CloseConn", connId)
 	s.close_client <- connId
 	return nil
 }
 
 func (s *server) Close() error {
+	fmt.Println("Server: Closing")
 	s.close_server <- 1
 	return nil
 }
