@@ -96,11 +96,8 @@ type client struct {
 	readPayloads       chan []byte  // payload from server
 	readRequest        chan struct{}
 	sendPayloads       chan []byte // payload to server
-	sendingWindow      SlidingWindow
 	receivedRecord     []Message
 	sn                 int // seqNum
-	accessSn           chan struct{}
-	getSn              chan int
 	MaxUnackedMessages int
 }
 
@@ -164,12 +161,10 @@ func NewClient(hostport string, initialSeqNum int, params *Params) (Client, erro
 		connId:             connId,
 		rawMessages:        make(chan Message, RAW_MESSAGE_LENGTH),
 		readPayloads:       make(chan []byte, RAW_MESSAGE_LENGTH),
+		readRequest:        make(chan struct{}),
 		sendPayloads:       make(chan []byte, RAW_MESSAGE_LENGTH),
-		sendingWindow:      SlidingWindow{window: make([]int, params.WindowSize), size: 0},
 		receivedRecord:     make([]Message, RECEIVED_WINDOW_SIZE),
 		sn:                 initialSeqNum,
-		accessSn:           make(chan struct{}),
-		getSn:              make(chan int),
 		MaxUnackedMessages: params.MaxUnackedMessages,
 	}
 	go c.mainRoutine()
@@ -178,11 +173,26 @@ func NewClient(hostport string, initialSeqNum int, params *Params) (Client, erro
 	return &c, nil
 }
 
+func (c *client) manageReceived(receiveSeqNum int) int {
+	if len(c.readPayloads) != 0 {
+		return receiveSeqNum
+	}
+	sort.Sort(BySeqNum(c.receivedRecord))
+	if len(c.receivedRecord) > 0 && c.receivedRecord[0].SeqNum == receiveSeqNum {
+		c.readPayloads <- c.receivedRecord[0].Payload
+		c.receivedRecord = c.receivedRecord[1:]
+		receiveSeqNum++
+	}
+	return receiveSeqNum
+}
+
 func (c *client) mainRoutine() {
 	sendingSeqNum := c.sn
 	receiveSeqNum := c.sn
 	for {
 		select {
+		case <-c.readRequest:
+			receiveSeqNum = c.manageReceived(receiveSeqNum)
 		case payload, ok := <-c.sendPayloads:
 			if !ok {
 				continue // TODO: resolve this
@@ -206,25 +216,17 @@ func (c *client) mainRoutine() {
 			switch message.Type {
 			case MsgAck:
 				continue
-				// c.sendingWindow.RemoveSeqNum(message.SeqNum) // TODO: race condition
 			case MsgCAck:
 				continue
-				// c.sendingWindow.RemoveBeforeSeqNum(message.SeqNum) // TODO: race condition
 			case MsgData:
 				// If the Read function gets called multiple times, we expect
 				// all messages received from the server to be returned by Read
-				// in order by SeqNum without skipping or repeating any SeqNum.
-				// TODO: put the payload in the right order
+				// in order by SeqNum without skipping or repeating any SeqNum.e
 				if message.ConnID != c.connId {
 					continue
 				}
 				c.receivedRecord = append(c.receivedRecord, message)
-				sort.Sort(BySeqNum(c.receivedRecord))
-				if len(c.readPayloads) == 0 && c.receivedRecord[0].SeqNum == receiveSeqNum {
-					c.readPayloads <- c.receivedRecord[0].Payload
-					c.receivedRecord = c.receivedRecord[1:]
-					receiveSeqNum++
-				}
+				receiveSeqNum = c.manageReceived(receiveSeqNum)
 				// send ack
 				ackMessage := *NewAck(c.connId, message.SeqNum)
 				marAckMessage, err := json.Marshal(ackMessage)
@@ -243,7 +245,7 @@ func (c *client) mainRoutine() {
 }
 
 func (c *client) readRoutine() {
-	readMessage := make([]byte, MAX_LENGTH) // TODO: ask how to implement this
+	readMessage := make([]byte, MAX_LENGTH)
 	for {
 		n, err := c.conn.Read(readMessage)
 		if err != nil {
@@ -257,11 +259,6 @@ func (c *client) readRoutine() {
 			fmt.Println(err)
 		}
 		c.rawMessages <- message
-
-		// TODO: check if it is necessary to clear the buffer
-		//for i := range readMessage {
-		//	readMessage[i] = 0
-		//}
 	}
 }
 
@@ -283,7 +280,7 @@ func (c *client) ConnID() int {
 // all messages received from the server to be returned by Read
 // in order by SeqNum without skipping or repeating any SeqNum.
 func (c *client) Read() ([]byte, error) {
-	// TODO: implement this method.
+	c.readRequest <- struct{}{}
 	payload, ok := <-c.readPayloads // Blocks indefinitely.
 	if !ok {
 		return nil, errors.New("connection has been explicitly closed")
@@ -299,12 +296,6 @@ func (c *client) Read() ([]byte, error) {
 // Write must either return a non-nil error, or never return anything.
 // TODO: what if the server is closed?
 func (c *client) Write(payload []byte) error {
-	// for {
-	// 	// TODO: race condition check
-	// 	if c.sendingWindow.getSize() < c.MaxUnackedMessages && sn-c.sendingWindow.getHead() < len(c.sendingWindow.window) {
-	// 		break
-	// 	}
-	// }
 	c.sendPayloads <- payload
 	return nil
 }
