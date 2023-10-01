@@ -193,10 +193,7 @@ func (c *client) mainRoutine() {
 		select {
 		case <-c.readRequest:
 			receiveSeqNum = c.manageReceived(receiveSeqNum)
-		case payload, ok := <-c.sendPayloads:
-			if !ok {
-				continue // TODO: resolve this
-			}
+		case payload := <-c.sendPayloads:
 			sn := sendingSeqNum + 1
 			checksum := CalculateChecksum(c.ConnID(), sn, len(payload), payload)
 			message := NewData(c.connId, sn, len(payload), payload, checksum)
@@ -219,12 +216,6 @@ func (c *client) mainRoutine() {
 			case MsgCAck:
 				continue
 			case MsgData:
-				// If the Read function gets called multiple times, we expect
-				// all messages received from the server to be returned by Read
-				// in order by SeqNum without skipping or repeating any SeqNum.e
-				if message.ConnID != c.connId {
-					continue
-				}
 				c.receivedRecord = append(c.receivedRecord, message)
 				receiveSeqNum = c.manageReceived(receiveSeqNum)
 				// send ack
