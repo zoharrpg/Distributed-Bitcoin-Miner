@@ -24,11 +24,8 @@ type server struct {
 	server_message_q      chan server_packet  // send message from server queue channel for send message from server
 	connid_to_readcounter map[int]int         // read counter for each connId
 	connid_to_outorder    map[int]*list.List  // outorder list for each connId
-	read_list             *list.List          // store ordered message
-	read_request          chan int            // send read signal
-	read_error            chan int            // read error signal
-	read_buffer           chan int
-	read_get              chan Message
+	readList              *list.List          // store ordered message
+	readRequest           chan int            // send read signal
 }
 
 // packet message from client struct
@@ -80,16 +77,13 @@ func NewServer(port int, params *Params) (Server, error) {
 		close_server:          make(chan int),
 		close_client:          make(chan int),
 		client_id_counter:     1,
-		read_q:                make(chan Message),
+		read_q:                make(chan Message, 1),
 		connID_to_seq:         make(map[int]*client_seq),
 		server_message_q:      make(chan server_packet),
 		connid_to_readcounter: make(map[int]int),
 		connid_to_outorder:    make(map[int]*list.List),
-		read_list:             list.New(),
-		read_request:          make(chan int),
-		read_error:            make(chan int),
-		read_buffer:           make(chan int, 1),
-		read_get:              make(chan Message, 1),
+		readList:              list.New(),
+		readRequest:           make(chan int),
 	}
 
 	go se.mainRoutine()
@@ -98,8 +92,16 @@ func NewServer(port int, params *Params) (Server, error) {
 	return &se, err
 }
 
+func (s *server) manageReadList() {
+	if len(s.read_q) == 0 && s.readList.Len() > 0 {
+		head := s.readList.Front()
+		s.readList.Remove(head)
+		s.read_q <- head.Value.(Message)
+	}
+}
+
 // handle message for each case
-func (s *server) mainRoutine() error {
+func (s *server) mainRoutine() {
 	for {
 		select {
 		case packet := <-s.packet_q:
@@ -108,19 +110,20 @@ func (s *server) mainRoutine() error {
 			client := client_info{packetAddr: packet.packetAddr, connId: packet.message.ConnID}
 
 			switch packet.message.Type {
+			case MsgAck:
+				continue
+			case MsgCAck:
+				continue
 			case MsgConnect:
-				ack_message := *NewAck(s.client_id_counter, sn)
-				ack_message_mar, err := json.Marshal(ack_message)
+				ackMessage := *NewAck(s.client_id_counter, sn)
+				ackMessageMar, err := json.Marshal(ackMessage)
 				if err != nil {
-					fmt.Printf("M error ")
-					return err
-
+					fmt.Println(err)
 				}
 
-				_, err = s.listener.WriteToUDP(ack_message_mar, client.packetAddr)
+				_, err = s.listener.WriteToUDP(ackMessageMar, client.packetAddr)
 				if err != nil {
-					fmt.Printf("write error ")
-					return err
+					fmt.Println(err)
 				}
 				// initialize map
 				s.connID_to_seq[s.client_id_counter] = &client_seq{packetAddr: packet.packetAddr, serverSeq: sn}
@@ -131,30 +134,29 @@ func (s *server) mainRoutine() error {
 				// add id counter
 				s.client_id_counter++
 			case MsgData:
-				ack_message := *NewAck(client.connId, sn)
-
-				ack_message_mar, err := json.Marshal(ack_message)
+				ackMessage := *NewAck(client.connId, sn)
+				ackMessageMar, err := json.Marshal(ackMessage)
 				if err != nil {
-					return err
+					fmt.Println(err)
 				}
-				_, err = s.listener.WriteToUDP(ack_message_mar, client.packetAddr)
+				_, err = s.listener.WriteToUDP(ackMessageMar, client.packetAddr)
 
 				// fmt.Println("send ack")
 
 				if err != nil {
-					return err
+					fmt.Println(err)
 				}
 
 				// if received message match the read counter, just add it to read_list
 				if sn == s.connid_to_readcounter[client.connId] {
 
-					s.read_list.PushBack(packet.message)
+					s.readList.PushBack(packet.message)
 					s.connid_to_readcounter[client.connId]++
-					// check if there is an element in outorder list that match the seq number after
+					// check if there is an element in out-of-order list that match the seq number after
 					element := s.findElement(client.connId, s.connid_to_readcounter[client.connId])
-					// add element until there is no element in outorder list that match seq number
+					// add element until there is no element in out-of-order list that match seq number
 					for element != nil {
-						s.read_list.PushBack(element.Value.(Message))
+						s.readList.PushBack(element.Value.(Message))
 						s.connid_to_readcounter[client.connId]++
 						element = s.findElement(client.connId, s.connid_to_readcounter[client.connId])
 					}
@@ -162,43 +164,30 @@ func (s *server) mainRoutine() error {
 					if s.connid_to_outorder[client.connId] == nil {
 						s.connid_to_outorder[client.connId] = list.New()
 					}
-					// outorder element
+					// out-of-order element
 					s.connid_to_outorder[client.connId].PushBack(packet.message)
 				}
 
-				if len(s.read_buffer) == 1 && s.read_list.Len() > 0 {
-
-					e := s.read_list.Front()
-
-					if e != nil {
-						s.read_list.Remove(e)
-						read_m := e.Value.(Message)
-						s.read_get <- read_m
-						<-s.read_buffer
-
-					}
-				}
-
-			case MsgAck:
-				continue
-			case MsgCAck:
-				continue
+				s.manageReadList()
 			}
-			// if send message to client
-		case message_to_client := <-s.server_message_q:
-			mar_message, _ := json.Marshal(message_to_client.packet)
-			_, err := s.listener.WriteToUDP(mar_message, message_to_client.c.packetAddr)
+		case <-s.readRequest:
+			s.manageReadList()
+		// if send message to client
+		case messageToClient := <-s.server_message_q:
+			marMessage, _ := json.Marshal(messageToClient.packet)
+			_, err := s.listener.WriteToUDP(marMessage, messageToClient.c.packetAddr)
 
 			if err != nil {
-				fmt.Printf("Write error")
-				return err
+				fmt.Println(err)
 			}
 			// update seq id
-			s.connID_to_seq[message_to_client.connId].serverSeq++
+			s.connID_to_seq[messageToClient.connId].serverSeq++
 
 		case <-s.close_server:
-			s.listener.Close()
-			return nil
+			err := s.listener.Close()
+			if err != nil {
+				return
+			}
 		// close connection for the close client
 		case connId := <-s.close_client:
 			//addr := s.connID_to_seq[connId].packet_addr
@@ -208,17 +197,6 @@ func (s *server) mainRoutine() error {
 			delete(s.connid_to_readcounter, connId)
 			delete(s.connid_to_outorder, connId)
 			// pop message from the read_list
-
-		case <-s.read_request:
-			if s.read_list.Len() > 0 {
-				head := s.read_list.Front()
-				s.read_list.Remove(head)
-				s.read_q <- head.Value.(Message)
-
-			} else {
-				s.read_error <- 1
-
-			}
 
 		}
 	}
@@ -237,22 +215,19 @@ func (s *server) findElement(connId int, seq int) *list.Element {
 }
 
 // read message from client
-func (s *server) readRoutine() error {
+func (s *server) readRoutine() {
 	for {
 		tmp := make([]byte, MAX_LENGTH)
 		n, addr, err := s.listener.ReadFromUDP(tmp)
 
-		//fmt.Printf("client connenct")
 		if err != nil {
-			return err
+			fmt.Println(err)
 		}
 
 		var message Message
 		err = json.Unmarshal(tmp[:n], &message)
 		if err != nil {
-			fmt.Printf(err.Error())
-			fmt.Printf("UN error")
-			return err
+			fmt.Println(err)
 		}
 		p := packet_message{packetAddr: addr, message: message}
 		s.packet_q <- p
@@ -261,39 +236,19 @@ func (s *server) readRoutine() error {
 
 // read message from server
 func (s *server) Read() (int, []byte, error) {
-
-	s.read_request <- 1
-
-	select {
-
-	case m := <-s.read_q:
-		return m.ConnID, m.Payload, nil
-	case <-s.read_error:
-		s.read_buffer <- 1
-		m := <-s.read_get
-		return m.ConnID, m.Payload, nil
-
-	}
-
-	// TODO: remove this line when you are ready to begin implementing this method.
-	//s.read_request <- 1
-	// select {
-	// case m := <-s.read_q:
-	// 	return m.ConnID, m.Payload, nil
-	// case <-s.read_error:
-
-	// 	return -1, nil, errors.New("read_error")
-	// }
+	s.readRequest <- 1
+	message := <-s.read_q
+	return message.ConnID, message.Payload, nil
 }
 
 func (s *server) Write(connId int, payload []byte) error {
-	server_message_info, ok := s.connID_to_seq[connId]
+	serverMessageInfo, ok := s.connID_to_seq[connId]
 	if !ok {
 		return errors.New("cannot find connId")
 	}
-	checksum := CalculateChecksum(connId, server_message_info.serverSeq, len(payload), payload)
-	message := *NewData(connId, server_message_info.serverSeq, len(payload), payload, checksum)
-	sp := server_packet{c: *server_message_info, packet: message, connId: connId}
+	checksum := CalculateChecksum(connId, serverMessageInfo.serverSeq, len(payload), payload)
+	message := *NewData(connId, serverMessageInfo.serverSeq, len(payload), payload, checksum)
+	sp := server_packet{c: *serverMessageInfo, packet: message, connId: connId}
 	s.server_message_q <- sp
 	return nil
 }
