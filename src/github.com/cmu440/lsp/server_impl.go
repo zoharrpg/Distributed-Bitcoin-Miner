@@ -4,8 +4,8 @@ package lsp
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 
 	"container/list"
@@ -14,18 +14,29 @@ import (
 )
 
 type server struct {
-	listener              *lspnet.UDPConn     // server listener
-	packet_q              chan packet_message // receive message from client channel
-	close_server          chan int            // close server signal
-	close_client          chan int            // close client signal
-	client_id_counter     int                 // assign client id
-	read_q                chan Message        // Read channel
-	connID_to_seq         map[int]*client_seq // ID to client seq map, to get client seq by connId
-	server_message_q      chan server_packet  // send message from server queue channel for send message from server
-	connid_to_readcounter map[int]int         // read counter for each connId
-	connid_to_outorder    map[int]*list.List  // outorder list for each connId
-	readList              *list.List          // store ordered message
-	readRequest           chan int            // send read signal
+	listener              *lspnet.UDPConn       // server listener
+	packet_q              chan packet_message   // receive message from client channel
+	close_server          chan int              // close server signal
+	close_client          chan int              // close client signal
+	client_id_counter     int                   // assign client id
+	read_q                chan Message          // Read channel
+	connID_to_seq         map[int]*client_seq   // ID to client seq map, to get client seq by connId
+	server_message_q      chan server_packet    // send message from server queue channel for send message from server
+	connid_to_readcounter map[int]int           // read counter for each connId
+	connid_to_outorder    map[int]*list.List    // outorder list for each connId
+	readList              *list.List            // store ordered message
+	readRequest           chan int              // send read signal
+	window_map            map[int][]Message     // slide window for each client
+	window_state_map      map[int]*window_state // slide window state for each client
+	window_outorder       map[int][]Message     // slide window outorder list
+
+	window_size int
+	max_unack   int
+}
+
+type window_state struct {
+	unack_count int
+	unack_index int
 }
 
 // packet message from client struct
@@ -49,9 +60,8 @@ type client_seq struct {
 
 // store client and connect id and c
 type server_packet struct {
-	c      client_seq
-	packet Message
-	connId int
+	connId   int
+	playload []byte
 }
 
 // NewServer creates, initiates, and returns a new server. This function should
@@ -84,6 +94,11 @@ func NewServer(port int, params *Params) (Server, error) {
 		connid_to_outorder:    make(map[int]*list.List),
 		readList:              list.New(),
 		readRequest:           make(chan int),
+		window_map:            make(map[int][]Message),
+		window_state_map:      make(map[int]*window_state),
+		window_outorder:       make(map[int][]Message),
+		window_size:           params.WindowSize,
+		max_unack:             params.MaxUnackedMessages,
 	}
 
 	go se.mainRoutine()
@@ -111,9 +126,59 @@ func (s *server) mainRoutine() {
 
 			switch packet.message.Type {
 			case MsgAck:
-				continue
+				length := len(s.window_map[client.connId])
+				s.window_map[client.connId] = removeFromSlice(s.window_map[client.connId], sn)
+				if len(s.window_map[client.connId]) == length {
+					fmt.Println("Slice Find Error")
+				}
+				s.window_state_map[client.connId].unack_index = s.window_map[client.connId][0].SeqNum
+				s.window_state_map[client.connId].unack_count -= 1
+
+				for _, m := range s.window_outorder[client.connId] {
+					if m.SeqNum < s.window_state_map[client.connId].unack_index+s.window_size && s.window_state_map[client.connId].unack_count < s.max_unack {
+						marMessage, _ := json.Marshal(m)
+						_, err := s.listener.WriteToUDP(marMessage, client.packetAddr)
+						if err != nil {
+							fmt.Println(err)
+						}
+						// update unack count
+						s.window_state_map[client.connId].unack_count++
+						s.window_map[client.connId] = append(s.window_map[client.connId], m)
+						sort.Slice(s.window_map[client.connId], func(i, j int) bool {
+							return s.window_map[client.connId][i].SeqNum < s.window_map[client.connId][j].SeqNum
+						})
+
+					}
+
+				}
+
 			case MsgCAck:
-				continue
+				length := len(s.window_map[client.connId])
+				s.window_map[client.connId] = removeFromSlice_CAck(s.window_map[client.connId], sn)
+				if len(s.window_map[client.connId]) == length {
+					fmt.Println("Slice Find Error")
+				}
+				s.window_state_map[client.connId].unack_index = s.window_map[client.connId][0].SeqNum
+				s.window_state_map[client.connId].unack_count -= length - len(s.window_map[client.connId])
+
+				for _, m := range s.window_outorder[client.connId] {
+					if m.SeqNum < s.window_state_map[client.connId].unack_index+s.window_size && s.window_state_map[client.connId].unack_count < s.max_unack {
+						marMessage, _ := json.Marshal(m)
+						_, err := s.listener.WriteToUDP(marMessage, client.packetAddr)
+						if err != nil {
+							fmt.Println(err)
+						}
+						// update unack count
+						s.window_state_map[client.connId].unack_count++
+						s.window_map[client.connId] = append(s.window_map[client.connId], m)
+						sort.Slice(s.window_map[client.connId], func(i, j int) bool {
+							return s.window_map[client.connId][i].SeqNum < s.window_map[client.connId][j].SeqNum
+						})
+
+					}
+
+				}
+
 			case MsgConnect:
 				ackMessage := *NewAck(s.client_id_counter, sn)
 				ackMessageMar, err := json.Marshal(ackMessage)
@@ -130,6 +195,10 @@ func (s *server) mainRoutine() {
 				// message start from sn+1
 				s.connid_to_readcounter[s.client_id_counter] = sn + 1
 				s.connid_to_outorder[s.client_id_counter] = list.New()
+
+				s.window_map[s.client_id_counter] = make([]Message, 0)
+				s.window_state_map[s.client_id_counter] = &window_state{unack_count: 0, unack_index: sn + 1}
+				s.window_outorder[s.client_id_counter] = make([]Message, 0)
 
 				// add id counter
 				s.client_id_counter++
@@ -174,14 +243,37 @@ func (s *server) mainRoutine() {
 			s.manageReadList()
 		// if send message to client
 		case messageToClient := <-s.server_message_q:
-			marMessage, _ := json.Marshal(messageToClient.packet)
-			_, err := s.listener.WriteToUDP(marMessage, messageToClient.c.packetAddr)
+			serverMessageInfo, ok := s.connID_to_seq[messageToClient.connId]
 
-			if err != nil {
-				fmt.Println(err)
+			if ok {
+				// message
+				checksum := CalculateChecksum(messageToClient.connId, serverMessageInfo.serverSeq, len(messageToClient.playload), messageToClient.playload)
+				// message
+				message := *NewData(messageToClient.connId, serverMessageInfo.serverSeq, len(messageToClient.playload), messageToClient.playload, checksum)
+
+				if message.SeqNum < s.window_state_map[messageToClient.connId].unack_index+s.window_size && s.window_state_map[messageToClient.connId].unack_count < s.max_unack {
+					marMessage, _ := json.Marshal(message)
+					_, err := s.listener.WriteToUDP(marMessage, serverMessageInfo.packetAddr)
+					if err != nil {
+						fmt.Println(err)
+					}
+					// update unack count
+					s.window_state_map[messageToClient.connId].unack_count++
+					s.window_map[messageToClient.connId] = append(s.window_map[messageToClient.connId], message)
+					sort.Slice(s.window_map[messageToClient.connId], func(i, j int) bool {
+						return s.window_map[messageToClient.connId][i].SeqNum < s.window_map[messageToClient.connId][j].SeqNum
+					})
+				} else {
+					s.window_outorder[messageToClient.connId] = append(s.window_outorder[messageToClient.connId], message)
+					sort.Slice(s.window_outorder[messageToClient.connId], func(i, j int) bool {
+						return s.window_outorder[messageToClient.connId][i].SeqNum < s.window_outorder[messageToClient.connId][j].SeqNum
+					})
+				}
+
+				// update seq id
+				s.connID_to_seq[messageToClient.connId].serverSeq++
+
 			}
-			// update seq id
-			s.connID_to_seq[messageToClient.connId].serverSeq++
 
 		case <-s.close_server:
 			err := s.listener.Close()
@@ -242,13 +334,13 @@ func (s *server) Read() (int, []byte, error) {
 }
 
 func (s *server) Write(connId int, payload []byte) error {
-	serverMessageInfo, ok := s.connID_to_seq[connId]
-	if !ok {
-		return errors.New("cannot find connId")
-	}
-	checksum := CalculateChecksum(connId, serverMessageInfo.serverSeq, len(payload), payload)
-	message := *NewData(connId, serverMessageInfo.serverSeq, len(payload), payload, checksum)
-	sp := server_packet{c: *serverMessageInfo, packet: message, connId: connId}
+	//serverMessageInfo, ok := s.connID_to_seq[connId]
+	// if !ok {
+	// 	return errors.New("cannot find connId")
+	// }
+	// checksum := CalculateChecksum(connId, serverMessageInfo.serverSeq, len(payload), payload)
+	// message := *NewData(connId, serverMessageInfo.serverSeq, len(payload), payload, checksum)
+	sp := server_packet{connId: connId, playload: payload}
 	s.server_message_q <- sp
 	return nil
 }
