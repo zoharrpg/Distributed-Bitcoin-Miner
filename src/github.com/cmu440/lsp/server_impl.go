@@ -396,6 +396,7 @@ func (s *server) mainRoutine() {
 					}
 
 				}
+				s.message_sent[k] = false
 			}
 
 			for k, v := range s.message_backoff {
