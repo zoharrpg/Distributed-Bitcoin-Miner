@@ -188,11 +188,7 @@ func (s *server) mainRoutine() {
 						if err != nil {
 							fmt.Println(err)
 						}
-						_, err = s.listener.WriteToUDP(marMessage, client.packetAddr)
-						if err != nil {
-							fmt.Println(err)
-						}
-						s.message_backoff[messageID{connID: m.ConnID, server_message_seq: m.SeqNum}] = &backoffInfo{currentBackoff: 1, runningBackoff: 0, m: m}
+						s.message_backoff[messageID{connID: m.ConnID, server_message_seq: m.SeqNum}] = &backoffInfo{currentBackoff: 0, runningBackoff: 0, m: m}
 						// update unack count
 						s.window_state_map[client.connId].unack_count++
 						s.window_map[client.connId] = append(s.window_map[client.connId], m)
@@ -239,14 +235,10 @@ func (s *server) mainRoutine() {
 						if err != nil {
 							fmt.Println(err)
 						}
-						_, err = s.listener.WriteToUDP(marMessage, client.packetAddr)
-						if err != nil {
-							fmt.Println(err)
-						}
 						// update unack count
 						s.window_state_map[client.connId].unack_count++
 						s.window_map[client.connId] = append(s.window_map[client.connId], m)
-						s.message_backoff[messageID{connID: m.ConnID, server_message_seq: m.SeqNum}] = &backoffInfo{currentBackoff: 1, runningBackoff: 0, m: m}
+						s.message_backoff[messageID{connID: m.ConnID, server_message_seq: m.SeqNum}] = &backoffInfo{currentBackoff: 0, runningBackoff: 0, m: m}
 						sort.Slice(s.window_map[client.connId], func(i, j int) bool {
 							return s.window_map[client.connId][i].SeqNum < s.window_map[client.connId][j].SeqNum
 						})
@@ -357,11 +349,7 @@ func (s *server) mainRoutine() {
 					if err != nil {
 						fmt.Println(err)
 					}
-					_, err = s.listener.WriteToUDP(marMessage, serverMessageInfo.packetAddr)
-					if err != nil {
-						fmt.Println(err)
-					}
-					s.message_backoff[messageID{connID: message.ConnID, server_message_seq: message.SeqNum}] = &backoffInfo{currentBackoff: 1, runningBackoff: 0, m: message}
+					s.message_backoff[messageID{connID: message.ConnID, server_message_seq: message.SeqNum}] = &backoffInfo{currentBackoff: 0, runningBackoff: 0, m: message}
 
 					// update unack count
 					s.window_state_map[messageToClient.connId].unack_count++
@@ -420,8 +408,13 @@ func (s *server) mainRoutine() {
 					if err != nil {
 						fmt.Println(err)
 					}
+					if s.message_backoff[k].currentBackoff == 0 {
+						s.message_backoff[k].currentBackoff++
+					} else {
+						s.message_backoff[k].currentBackoff *= 2
 
-					s.message_backoff[k].currentBackoff *= 2
+					}
+
 					s.message_backoff[k].runningBackoff = 0
 				}
 				if v.runningBackoff < v.currentBackoff {
