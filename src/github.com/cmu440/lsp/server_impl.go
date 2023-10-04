@@ -15,27 +15,27 @@ import (
 )
 
 type server struct {
-	listener              *lspnet.UDPConn       // server listener
-	packet_q              chan packet_message   // receive message from client channel
-	close_server          chan int              // close server signal
-	close_client          chan int              // close client signal
-	client_id_counter     int                   // assign client id
-	read_q                chan Message          // Read channel
-	connID_to_seq         map[int]*client_seq   // ID to client seq map, to get client seq by connId
-	server_message_q      chan server_packet    // send message from server queue channel for send message from server
-	connid_to_readcounter map[int]int           // read counter for each connId
-	connid_to_outorder    map[int]*list.List    // outorder list for each connId
-	readList              *list.List            // store ordered message
-	readRequest           chan int              // send read signal
-	window_map            map[int][]Message     // slide window for each client
-	window_state_map      map[int]*window_state // slide window state for each client
-	window_outorder       map[int][]Message     // slide window outorder list
-	time_signal           *time.Ticker
-	message_dup_map       map[int]map[int]bool // id to receive request seq
-	connection_dup_map    map[lspnet.UDPAddr]bool
-	active_client_map     map[int]int  //connid to epoch
-	message_sent          map[int]bool // in each epoch, True if there is message sent
-	message_backoff       map[messageID]*backoffInfo
+	listener              *lspnet.UDPConn     // server listener
+	packet_q              chan packet_message // receive message from client channel
+	close_server          chan int            // close server signal
+	close_client          chan int            // close client signal
+	client_id_counter     int                 // assign client id
+	read_q                chan Message        // Read channel
+	connID_to_seq         map[int]*client_seq // ID to client seq map, to get client seq by connId
+	server_message_q      chan server_packet  // send message from server queue channel for send message from server
+	connid_to_readcounter map[int]int         // read counter for each connId
+	connid_to_outorder    map[int]*list.List  // outorder list for each connId
+	readList              *list.List          // store ordered message
+	readRequest           chan int            // send read signal
+	window_map            map[int][]Message   // slide window for each client
+	//window_state_map      map[int]*window_state // slide window state for each client
+	window_outorder    map[int][]Message // slide window outorder list
+	time_signal        *time.Ticker
+	message_dup_map    map[int]map[int]bool // id to receive request seq
+	connection_dup_map map[lspnet.UDPAddr]bool
+	active_client_map  map[int]int  //connid to epoch
+	message_sent       map[int]bool // in each epoch, True if there is message sent
+	message_backoff    map[messageID]*backoffInfo
 
 	window_size        int
 	max_unack          int
@@ -113,14 +113,14 @@ func NewServer(port int, params *Params) (Server, error) {
 		readList:              list.New(),
 		readRequest:           make(chan int),
 		window_map:            make(map[int][]Message),
-		window_state_map:      make(map[int]*window_state),
-		window_outorder:       make(map[int][]Message),
-		time_signal:           ticker,
-		message_dup_map:       make(map[int]map[int]bool),
-		connection_dup_map:    make(map[lspnet.UDPAddr]bool),
-		active_client_map:     make(map[int]int),
-		message_sent:          make(map[int]bool),
-		message_backoff:       make(map[messageID]*backoffInfo),
+		//window_state_map:      make(map[int]*window_state),
+		window_outorder:    make(map[int][]Message),
+		time_signal:        ticker,
+		message_dup_map:    make(map[int]map[int]bool),
+		connection_dup_map: make(map[lspnet.UDPAddr]bool),
+		active_client_map:  make(map[int]int),
+		message_sent:       make(map[int]bool),
+		message_backoff:    make(map[messageID]*backoffInfo),
 
 		window_size:        params.WindowSize,
 		max_unack:          params.MaxUnackedMessages,
@@ -170,8 +170,10 @@ func (s *server) mainRoutine() {
 				if len(s.window_map[client.connId]) == length {
 					fmt.Println("Slice Find Error")
 				}
-				s.window_state_map[client.connId].unack_index = s.window_map[client.connId][0].SeqNum
-				s.window_state_map[client.connId].unack_count -= 1
+
+				//s.window_state_map[client.connId].unack_index++
+				//
+				//s.window_state_map[client.connId].unack_count -= 1
 				m_id := messageID{connID: client.connId, server_message_seq: sn}
 				if _, exist := s.message_backoff[m_id]; exist {
 					delete(s.message_backoff, m_id)
@@ -182,7 +184,7 @@ func (s *server) mainRoutine() {
 				}
 
 				for _, m := range s.window_outorder[client.connId] {
-					if m.SeqNum < s.window_state_map[client.connId].unack_index+s.window_size && s.window_state_map[client.connId].unack_count < s.max_unack {
+					if len(s.window_map[client.connId]) == 0 || (m.SeqNum < s.window_map[client.connId][0].SeqNum+s.window_size && len(s.window_map[client.connId]) < s.max_unack) {
 						marMessage, _ := json.Marshal(m)
 						_, err := s.listener.WriteToUDP(marMessage, client.packetAddr)
 						if err != nil {
@@ -190,7 +192,7 @@ func (s *server) mainRoutine() {
 						}
 						s.message_backoff[messageID{connID: m.ConnID, server_message_seq: m.SeqNum}] = &backoffInfo{currentBackoff: 0, runningBackoff: 0, m: m}
 						// update unack count
-						s.window_state_map[client.connId].unack_count++
+						//s.window_state_map[client.connId].unack_count++
 						s.window_map[client.connId] = append(s.window_map[client.connId], m)
 						sort.Slice(s.window_map[client.connId], func(i, j int) bool {
 							return s.window_map[client.connId][i].SeqNum < s.window_map[client.connId][j].SeqNum
@@ -225,18 +227,18 @@ func (s *server) mainRoutine() {
 				if len(s.window_map[client.connId]) == length {
 					fmt.Println("Slice Find Error")
 				}
-				s.window_state_map[client.connId].unack_index = s.window_map[client.connId][0].SeqNum
-				s.window_state_map[client.connId].unack_count -= length - len(s.window_map[client.connId])
+				//s.window_state_map[client.connId].unack_index = s.window_map[client.connId][0].SeqNum
+				//s.window_state_map[client.connId].unack_count -= length - len(s.window_map[client.connId])
 
 				for _, m := range s.window_outorder[client.connId] {
-					if m.SeqNum < s.window_state_map[client.connId].unack_index+s.window_size && s.window_state_map[client.connId].unack_count < s.max_unack {
+					if len(s.window_map[client.connId]) == 0 || (m.SeqNum < s.window_map[client.connId][0].SeqNum+s.window_size && len(s.window_map[client.connId]) < s.max_unack) {
 						marMessage, _ := json.Marshal(m)
 						_, err := s.listener.WriteToUDP(marMessage, client.packetAddr)
 						if err != nil {
 							fmt.Println(err)
 						}
 						// update unack count
-						s.window_state_map[client.connId].unack_count++
+						//s.window_state_map[client.connId].unack_count++
 						s.window_map[client.connId] = append(s.window_map[client.connId], m)
 						s.message_backoff[messageID{connID: m.ConnID, server_message_seq: m.SeqNum}] = &backoffInfo{currentBackoff: 0, runningBackoff: 0, m: m}
 						sort.Slice(s.window_map[client.connId], func(i, j int) bool {
@@ -269,7 +271,7 @@ func (s *server) mainRoutine() {
 				s.connid_to_outorder[s.client_id_counter] = list.New()
 
 				s.window_map[s.client_id_counter] = make([]Message, 0)
-				s.window_state_map[s.client_id_counter] = &window_state{unack_count: 0, unack_index: sn + 1}
+				//s.window_state_map[s.client_id_counter] = &window_state{unack_count: 0, unack_index: -1}
 				s.window_outorder[s.client_id_counter] = make([]Message, 0)
 				s.message_dup_map[s.client_id_counter] = make(map[int]bool)
 				// mark connect this
@@ -342,7 +344,7 @@ func (s *server) mainRoutine() {
 				// message
 				message := *NewData(messageToClient.connId, serverMessageInfo.serverSeq, len(messageToClient.playload), messageToClient.playload, checksum)
 
-				if message.SeqNum < s.window_state_map[messageToClient.connId].unack_index+s.window_size && s.window_state_map[messageToClient.connId].unack_count < s.max_unack {
+				if len(s.window_map[messageToClient.connId]) == 0 || (message.SeqNum < s.window_map[messageToClient.connId][0].SeqNum+s.window_size && len(s.window_map[messageToClient.connId]) < s.max_unack) {
 					marMessage, _ := json.Marshal(message)
 					_, err := s.listener.WriteToUDP(marMessage, serverMessageInfo.packetAddr)
 
@@ -352,7 +354,7 @@ func (s *server) mainRoutine() {
 					s.message_backoff[messageID{connID: message.ConnID, server_message_seq: message.SeqNum}] = &backoffInfo{currentBackoff: 0, runningBackoff: 0, m: message}
 
 					// update unack count
-					s.window_state_map[messageToClient.connId].unack_count++
+					//s.window_state_map[messageToClient.connId].unack_count++
 					s.window_map[messageToClient.connId] = append(s.window_map[messageToClient.connId], message)
 					sort.Slice(s.window_map[messageToClient.connId], func(i, j int) bool {
 						return s.window_map[messageToClient.connId][i].SeqNum < s.window_map[messageToClient.connId][j].SeqNum
@@ -445,7 +447,7 @@ func (s *server) endConnection(connId int) {
 	delete(s.connid_to_readcounter, connId)
 	delete(s.connid_to_outorder, connId)
 	delete(s.window_map, connId)
-	delete(s.window_state_map, connId)
+	//delete(s.window_state_map, connId)
 	delete(s.window_outorder, connId)
 	delete(s.active_client_map, connId)
 
@@ -504,6 +506,7 @@ func (s *server) Write(connId int, payload []byte) error {
 func (s *server) CloseConn(connId int) error {
 	fmt.Println("Server: CloseConn", connId)
 	s.close_client <- connId
+
 	return nil
 }
 
