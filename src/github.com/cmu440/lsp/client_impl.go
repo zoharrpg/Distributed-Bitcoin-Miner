@@ -3,11 +3,11 @@
 package lsp
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
-
-	"encoding/json"
+	"time"
 
 	"github.com/cmu440/lspnet"
 )
@@ -18,87 +18,17 @@ const (
 	RECEIVED_WINDOW_SIZE = 0
 )
 
-type SlidingWindow struct {
-	window []int
-	size   int
-}
-
-func (s *SlidingWindow) moveWindow() {
-	i := 0
-	for j := 0; j < len(s.window)-1; j++ {
-		if s.window[j] != 0 {
-			s.window[i] = s.window[j]
-			if j != i {
-				s.window[j] = 0
-			}
-			i++
-		}
-	}
-}
-
-func (s *SlidingWindow) AddSeqNum(sn int) {
-	s.window[s.size] = sn
-	s.size = s.size + 1
-}
-
-func (s *SlidingWindow) RemoveSeqNum(sn int) {
-	for i := 0; i < s.size; i++ {
-		if s.window[i] == sn {
-			s.window[i] = 0
-			s.size--
-			break
-		}
-	}
-	s.moveWindow()
-}
-
-func (s *SlidingWindow) RemoveBeforeSeqNum(sn int) {
-	breakFlag := false
-	size := s.size
-	for i := 0; i < size; i++ {
-		if s.window[i] <= sn {
-			if s.window[i] == sn {
-				breakFlag = true
-			}
-			s.window[i] = 0
-			s.size--
-			if breakFlag {
-				break
-			}
-		}
-	}
-	s.moveWindow()
-}
-
-func (s *SlidingWindow) getHead() int {
-	return s.window[0]
-}
-
-func (s *SlidingWindow) getSize() int {
-	return s.size
-}
-
-func (s *SlidingWindow) print() {
-	fmt.Printf("size: %d\n", s.size)
-	fmt.Printf("window: %v\n", s.window)
-}
-
-type BySeqNum []Message
-
-func (a BySeqNum) Len() int           { return len(a) }
-func (a BySeqNum) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-func (a BySeqNum) Less(i, j int) bool { return a[i].SeqNum < a[j].SeqNum }
-
 type client struct {
-	conn               *lspnet.UDPConn
-	connId             int
-	rawMessages        chan Message // raw message from server
-	readPayloads       chan []byte  // payload from server
-	readRequest        chan struct{}
-	sendPayloads       chan []byte // payload to server
-	receivedRecord     []Message
-	sn                 int // seqNum
-	MaxUnackedMessages int
+	conn           *lspnet.UDPConn
+	connId         int
+	rawMessages    chan Message // raw message from server
+	readPayloads   chan []byte  // payload from server
+	readRequest    chan struct{}
+	sendRequest    chan struct{}
+	sendPayloads   chan []byte // payload to server
+	receivedRecord []Message
+	sn             int // seqNum
+	params         *Params
 }
 
 // NewClient creates, initiates, and returns a new client. This function
@@ -125,47 +55,17 @@ func NewClient(hostport string, initialSeqNum int, params *Params) (Client, erro
 		return nil, err
 	}
 
-	connectRequest := NewConnect(initialSeqNum)
-	marConnReq, err := json.Marshal(connectRequest)
-	if err != nil {
-		return nil, err
-	}
-
-	_, err = connection.Write(marConnReq)
-	if err != nil {
-		return nil, err
-	}
-
-	// length
-	readMessage := make([]byte, MAX_LENGTH)
-	var n int
-	n, err = connection.Read(readMessage)
-	if err != nil {
-		return nil, err
-	}
-
-	ackMessage := Message{}
-	err = json.Unmarshal(readMessage[:n], &ackMessage)
-	if err != nil {
-		return nil, err
-	}
-
-	if ackMessage.Type != MsgAck {
-		return nil, errors.New("Ack message error")
-	}
-
-	connId := ackMessage.ConnID
-
 	c := client{
-		conn:               connection,
-		connId:             connId,
-		rawMessages:        make(chan Message, RAW_MESSAGE_LENGTH),
-		readPayloads:       make(chan []byte, RAW_MESSAGE_LENGTH),
-		readRequest:        make(chan struct{}),
-		sendPayloads:       make(chan []byte, RAW_MESSAGE_LENGTH),
-		receivedRecord:     make([]Message, RECEIVED_WINDOW_SIZE),
-		sn:                 initialSeqNum,
-		MaxUnackedMessages: params.MaxUnackedMessages,
+		conn:           connection,
+		connId:         -1,
+		rawMessages:    make(chan Message, RAW_MESSAGE_LENGTH),
+		readPayloads:   make(chan []byte, RAW_MESSAGE_LENGTH),
+		readRequest:    make(chan struct{}),
+		sendRequest:    make(chan struct{}),
+		sendPayloads:   make(chan []byte, RAW_MESSAGE_LENGTH),
+		receivedRecord: make([]Message, RECEIVED_WINDOW_SIZE),
+		sn:             initialSeqNum,
+		params:         params,
 	}
 	go c.mainRoutine()
 	go c.readRoutine()
@@ -186,50 +86,122 @@ func (c *client) manageReceived(receiveSeqNum int) int {
 	return receiveSeqNum
 }
 
+func (c *client) writeToServer(message Message) {
+	marMessage, err := json.Marshal(message)
+	if err != nil {
+		fmt.Println(err)
+	}
+	_, err = c.conn.Write(marMessage)
+	if err != nil {
+		fmt.Println(err)
+	}
+}
+
 func (c *client) mainRoutine() {
 	sendingSeqNum := c.sn
 	receiveSeqNum := c.sn
+	isMessageSent := false
+	idleEpochTime := 0
+	backOffMap := make(map[int]*BackOff)
+	unsentMessages := make([]Message, 0)
+
+	connectRequest := NewConnect(c.sn)
+	c.writeToServer(*connectRequest)
+	isMessageSent = true
+	s := SlidingWindow{make([]Message, 0)}
+	s.AddMessage(*connectRequest)
+	backOffMap[connectRequest.SeqNum] = &BackOff{0, 0}
+
+	ticker := time.NewTicker(time.Duration(c.params.EpochMillis))
+	defer ticker.Stop()
+
+	heartBeat := Message{}
+
 	for {
 		select {
+		case <-ticker.C:
+			if !isMessageSent {
+				c.writeToServer(heartBeat)
+			}
+			isMessageSent = false
+			if (idleEpochTime >= c.params.EpochLimit) && (len(c.receivedRecord) == 0) && (len(c.readPayloads) == 0) {
+				c.Close()
+				return
+			}
+			idleEpochTime++
+			// TODO: check back off and trigger resend
+			for seqNum, message := range s.window {
+				if backOffMap[seqNum].epochElapsed >= backOffMap[seqNum].currentBackoff {
+					if backOffMap[seqNum].currentBackoff == 0 {
+						backOffMap[seqNum].currentBackoff = 1
+					} else {
+						backOffMap[seqNum].currentBackoff = backOffMap[seqNum].currentBackoff * 2
+						if backOffMap[seqNum].currentBackoff > c.params.MaxBackOffInterval {
+							backOffMap[seqNum].currentBackoff = c.params.MaxBackOffInterval // TODO: check if it is correct
+						}
+					}
+					backOffMap[seqNum].epochElapsed = 0
+					c.writeToServer(message)
+					isMessageSent = true
+				}
+				backOffMap[seqNum].epochElapsed++
+			}
 		case <-c.readRequest:
 			receiveSeqNum = c.manageReceived(receiveSeqNum)
+		case <-c.sendRequest:
+			for {
+				if s.GetWindowSize() <= c.params.WindowSize && s.GetSize() <= c.params.MaxUnackedMessages {
+					message := unsentMessages[0]
+					unsentMessages = unsentMessages[1:]
+					s.AddMessage(message)
+					backOffMap[message.SeqNum] = &BackOff{0, 0}
+					c.writeToServer(message)
+					isMessageSent = true
+				} else {
+					break
+				}
+			}
 		case payload := <-c.sendPayloads:
-			sn := sendingSeqNum + 1
-			checksum := CalculateChecksum(c.ConnID(), sn, len(payload), payload)
-			message := NewData(c.connId, sn, len(payload), payload, checksum)
-			marMessage, err := json.Marshal(message)
-			if err != nil {
-				fmt.Println(err)
-			}
-			_, err = c.conn.Write(marMessage)
-			if err != nil {
-				fmt.Println(err)
-			}
 			sendingSeqNum++
+			checksum := CalculateChecksum(c.ConnID(), sendingSeqNum, len(payload), payload)
+			message := NewData(c.connId, sendingSeqNum, len(payload), payload, checksum)
+			unsentMessages = append(unsentMessages, *message)
+			// TODO: check if needs sort
+			c.sendRequest <- struct{}{}
+
 		case message, ok := <-c.rawMessages:
 			if !ok {
 				return // TODO: check if it would successfully return
 			}
 			switch message.Type {
+			case MsgConnect:
+				continue // do nothing
 			case MsgAck:
-				continue
+				if c.connId == -1 {
+					c.connId = message.ConnID
+					heartBeat = *NewAck(c.connId, 0)
+				}
+				s.RemoveSeqNum(message.SeqNum)
+				delete(backOffMap, message.SeqNum)
+				c.sendRequest <- struct{}{}
 			case MsgCAck:
-				continue
+				if c.connId == -1 {
+					c.connId = message.ConnID
+					heartBeat = *NewAck(c.connId, 0)
+				}
+				s.RemoveBeforeSeqNum(message.SeqNum)
+				for key := range backOffMap {
+					if key <= message.SeqNum {
+						delete(backOffMap, key)
+					}
+				}
+				c.sendRequest <- struct{}{}
 			case MsgData:
 				c.receivedRecord = append(c.receivedRecord, message)
 				receiveSeqNum = c.manageReceived(receiveSeqNum)
 				// send ack
 				ackMessage := *NewAck(c.connId, message.SeqNum)
-				marAckMessage, err := json.Marshal(ackMessage)
-				if err != nil {
-					fmt.Println(err)
-				}
-				_, err = c.conn.Write(marAckMessage)
-				if err != nil {
-					fmt.Println(err)
-				}
-			case MsgConnect:
-				continue // do nothing
+				c.writeToServer(ackMessage)
 			}
 		}
 	}
@@ -262,9 +234,9 @@ func (c *client) ConnID() int {
 // is ready to be returned. It should return a non-nil error if either
 //
 //	(1) the connection has been explicitly closed,
-//	(2) the connection has been lost due to an epoch timeout TODO: in final
+//	(2) the connection has been lost due to an epoch timeout
 //		and no other messages are waiting to be returned by read
-//	(3) the server is closed. Note that in the third case, TODO: check the server's status
+//	(3) the server is closed. Note that in the third case,
 //		it is also ok for Read to never return anything.
 //
 // If the Read function gets called multiple times, we expect
@@ -306,4 +278,75 @@ func (c *client) Close() error {
 	}
 	close(c.rawMessages) // signal mainRoutine to stop
 	return nil
+}
+
+type BackOff struct {
+	currentBackoff int
+	epochElapsed   int
+}
+
+type BySeqNum []Message
+
+func (a BySeqNum) Len() int           { return len(a) }
+func (a BySeqNum) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a BySeqNum) Less(i, j int) bool { return a[i].SeqNum < a[j].SeqNum }
+
+type SlidingWindow struct {
+	window []Message
+}
+
+func (s *SlidingWindow) AddMessage(m Message) {
+	s.window = append(s.window, m)
+	sort.Sort(BySeqNum(s.window)) // TODO: check if it needs sort
+}
+
+func (s *SlidingWindow) getIndex(sn int) int {
+	for i := 0; i < len(s.window); i++ {
+		if s.window[i].SeqNum == sn {
+			return i
+		}
+	}
+	return -1
+}
+
+func (s *SlidingWindow) PeakSeqNum() int {
+	return s.window[0].SeqNum
+}
+
+func (s *SlidingWindow) Find(sn int) Message {
+	i := s.getIndex(sn)
+	if i == -1 {
+		return Message{}
+	}
+	return s.window[i]
+}
+
+func (s *SlidingWindow) RemoveSeqNum(sn int) {
+	i := s.getIndex(sn)
+	if i == -1 {
+		return
+	}
+	s.window = append(s.window[:i], s.window[i+1:]...)
+}
+
+func (s *SlidingWindow) RemoveBeforeSeqNum(sn int) {
+	i := s.getIndex(sn)
+	if i == -1 {
+		return
+	}
+	s.window = s.window[i+1:]
+}
+
+func (s *SlidingWindow) GetSize() int {
+	return len(s.window)
+}
+
+func (s *SlidingWindow) GetWindowSize() int {
+	return s.window[len(s.window)-1].SeqNum - s.window[0].SeqNum + 1
+}
+
+func (s *SlidingWindow) print() {
+	fmt.Printf("size: %d ", s.GetSize())
+	fmt.Printf(", window size: %d ", s.GetWindowSize())
+	fmt.Printf("window: %v\n", s.window)
 }
