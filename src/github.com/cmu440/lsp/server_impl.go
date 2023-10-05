@@ -4,6 +4,7 @@ package lsp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -32,12 +33,15 @@ type server struct {
 	window_outorder    map[int][]Message // slide window outorder list
 	time_signal        *time.Ticker
 	message_dup_map    map[int]map[int]bool // id to receive request seq
-	connection_dup_map map[lspnet.UDPAddr]bool
+	connection_dup_map map[string]bool
 	active_client_map  map[int]int  //connid to epoch
 	message_sent       map[int]bool // in each epoch, True if there is message sent
 	message_backoff    map[messageID]*backoffInfo
 	close_pending      chan int
 	close_id           int
+	close_read         chan int
+	close_flag         bool
+	drop_id            chan int
 
 	window_size        int
 	max_unack          int
@@ -120,13 +124,15 @@ func NewServer(port int, params *Params) (Server, error) {
 		window_outorder:    make(map[int][]Message),
 		time_signal:        ticker,
 		message_dup_map:    make(map[int]map[int]bool),
-		connection_dup_map: make(map[lspnet.UDPAddr]bool),
+		connection_dup_map: make(map[string]bool),
 		active_client_map:  make(map[int]int),
 		message_sent:       make(map[int]bool),
 		message_backoff:    make(map[messageID]*backoffInfo),
 		close_pending:      make(chan int),
+		close_read:         make(chan int),
 		close_id:           -1,
-
+		close_flag:         false,
+		drop_id:            make(chan int, 1),
 		window_size:        params.WindowSize,
 		max_unack:          params.MaxUnackedMessages,
 		EpochLimit:         params.EpochLimit,
@@ -140,15 +146,28 @@ func NewServer(port int, params *Params) (Server, error) {
 }
 
 func (s *server) manageReadList() {
+
 	if len(s.read_q) == 0 && s.readList.Len() > 0 {
 		head := s.readList.Front()
 		s.readList.Remove(head)
-		s.read_q <- head.Value.(Message)
+		message := head.Value.(Message)
+		//if _, exist := s.active_client_map[message.ConnID]; exist {
+
+		s.read_q <- message
+		//}
+		//else {
+		//
+		//
+		//
+		//	s.drop_id <- message.ConnID
+		//}
+
 	}
 }
 
 // handle message for each case
 func (s *server) mainRoutine() {
+	defer s.time_signal.Stop()
 	for {
 		select {
 		case packet := <-s.packet_q:
@@ -168,12 +187,10 @@ func (s *server) mainRoutine() {
 
 				}
 
-				fmt.Println("server ACK receivec")
-
 				length := len(s.window_map[client.connId])
 				s.window_map[client.connId] = removeFromSlice(s.window_map[client.connId], sn)
-				fmt.Println("server slice")
-				fmt.Println(s.window_map[client.connId])
+				//fmt.Println("server slice")
+				//fmt.Println(s.window_map[client.connId])
 				if len(s.window_map[client.connId]) == length {
 					fmt.Println("Slice Find Error")
 				}
@@ -192,8 +209,6 @@ func (s *server) mainRoutine() {
 
 				var tmp []int
 
-				fmt.Println("window map:")
-				fmt.Println(s.window_map[client.connId])
 				for _, m := range s.window_outorder[client.connId] {
 					if len(s.window_map[client.connId]) == 0 || (m.SeqNum < s.window_map[client.connId][0].SeqNum+s.window_size && len(s.window_map[client.connId]) < s.max_unack) {
 						marMessage, _ := json.Marshal(m)
@@ -222,8 +237,32 @@ func (s *server) mainRoutine() {
 					s.close_id = -1
 
 				}
-				//fmt.Println("Map check")
-				//fmt.Println(s.window_map)
+				if s.close_flag {
+					all_zero := true
+					for _, v := range s.window_map {
+						if len(v) != 0 {
+							//s.close_flag = true
+							all_zero = false
+							break
+						}
+					}
+					for _, v := range s.window_outorder {
+						if len(v) != 0 {
+							//s.close_flag = true
+							all_zero = false
+							break
+						}
+					}
+					//fmt.Println(s.window_outorder)
+
+					if all_zero {
+						fmt.Println("all zero_invoke")
+						s.close_pending <- 1
+						return
+
+					}
+
+				}
 
 			case MsgCAck:
 				if _, exist := s.active_client_map[client.connId]; exist {
@@ -240,7 +279,7 @@ func (s *server) mainRoutine() {
 					if _, exist := s.message_backoff[m_id]; exist {
 						delete(s.message_backoff, m_id)
 					} else {
-						fmt.Println("Msg backoff map error")
+						//fmt.Println("Msg backoff map error")
 						continue
 
 					}
@@ -278,21 +317,25 @@ func (s *server) mainRoutine() {
 				}
 
 			case MsgConnect:
-				//fmt.Println("Connect case")
+
 				//ip := *client.packetAddr
-				if _, exist := s.connection_dup_map[*packet.packetAddr]; exist {
-					continue
-				}
+
 				ackMessage := *NewAck(s.client_id_counter, sn)
 				ackMessageMar, err := json.Marshal(ackMessage)
+
 				if err != nil {
 					fmt.Println(err)
 				}
 
 				_, err = s.listener.WriteToUDP(ackMessageMar, client.packetAddr)
+
 				if err != nil {
 					fmt.Println(err)
 				}
+				if _, exist := s.connection_dup_map[packet.packetAddr.String()]; exist {
+					continue
+				}
+				//fmt.Println("Connect case counter", s.client_id_counter)
 				// initialize map
 				s.connID_to_seq[s.client_id_counter] = &client_seq{packetAddr: packet.packetAddr, serverSeq: sn}
 				// message start from sn+1
@@ -304,7 +347,7 @@ func (s *server) mainRoutine() {
 				s.window_outorder[s.client_id_counter] = make([]Message, 0)
 				s.message_dup_map[s.client_id_counter] = make(map[int]bool)
 				// mark connect this
-				s.connection_dup_map[*packet.packetAddr] = true
+				s.connection_dup_map[packet.packetAddr.String()] = true
 				s.active_client_map[s.client_id_counter] = 0
 				s.message_sent[s.client_id_counter] = false
 
@@ -312,7 +355,7 @@ func (s *server) mainRoutine() {
 				s.client_id_counter++
 
 			case MsgData:
-				//fmt.Println("Get the data")
+				fmt.Println("Get the data")
 				if _, exist := s.active_client_map[client.connId]; exist {
 					s.active_client_map[client.connId] = 0
 
@@ -324,7 +367,7 @@ func (s *server) mainRoutine() {
 					fmt.Println(err)
 				}
 				_, err = s.listener.WriteToUDP(ackMessageMar, client.packetAddr)
-				fmt.Println("Server ack")
+				//fmt.Println("Server ack")
 
 				if _, exist := s.message_dup_map[client.connId][sn]; exist {
 					continue
@@ -360,7 +403,6 @@ func (s *server) mainRoutine() {
 					// out-of-order element
 					s.connid_to_outorder[client.connId].PushBack(packet.message)
 				}
-
 				s.manageReadList()
 			}
 		case <-s.readRequest:
@@ -404,16 +446,26 @@ func (s *server) mainRoutine() {
 			}
 
 		case <-s.time_signal.C:
+
 			//fmt.Println("epoch event")
 			// add epoch to every client state count
 			for k, _ := range s.active_client_map {
 				s.active_client_map[k]++
-				// end the connnection
+				// end the connection
 				if s.active_client_map[k] >= s.EpochLimit {
-					s.endConnection(k)
+					fmt.Println("read list content")
+					fmt.Println(s.readList.Len())
+					if !s.containID(s.readList, k) && s.connid_to_outorder[k].Len() == 0 {
+
+						if len(s.drop_id) == 0 {
+							s.drop_id <- k
+							s.endConnection(k)
+						}
+					}
 
 				}
 			}
+
 			// send heartbeat
 			for k, v := range s.message_sent {
 				if !v {
@@ -478,10 +530,34 @@ func (s *server) mainRoutine() {
 			}
 
 		case <-s.close_server:
-			err := s.listener.Close()
-			if err != nil {
+			///fmt.Println("Close server in main")
+
+			all_zero := true
+			for _, v := range s.window_map {
+				if len(v) != 0 {
+					s.close_flag = true
+					all_zero = false
+					break
+				}
+			}
+			for _, v := range s.window_outorder {
+				if len(v) != 0 {
+					s.close_flag = true
+					all_zero = false
+					break
+				}
+			}
+
+			if all_zero {
+				fmt.Println("zero invoke")
+				s.close_pending <- 1
 				return
 			}
+
+			//err := s.listener.Close()
+			//if err != nil {
+			//	return
+			//}
 		// close connection for the close client
 		case connId := <-s.close_client:
 			if len(s.window_map[connId])+len(s.window_outorder[connId]) == 0 {
@@ -500,9 +576,30 @@ func (s *server) mainRoutine() {
 	}
 	//return nil
 }
+func (s *server) containID(list2 *list.List, id int) bool {
+	for element := list2.Front(); element != nil; element = element.Next() {
+		if element.Value.(Message).ConnID == id {
+			return true
+		}
+
+	}
+	return false
+
+}
 
 func (s *server) endConnection(connId int) {
-	delete(s.connection_dup_map, *s.connID_to_seq[connId].packetAddr)
+	delete(s.connection_dup_map, s.connID_to_seq[connId].packetAddr.String())
+	var tmp []messageID
+
+	for k, _ := range s.message_backoff {
+		if k.connID == connId {
+			tmp = append(tmp, k)
+		}
+	}
+	for _, m_id := range tmp {
+		delete(s.message_backoff, m_id)
+
+	}
 
 	delete(s.connID_to_seq, connId)
 	delete(s.connid_to_readcounter, connId)
@@ -531,30 +628,66 @@ func (s *server) findElement(connId int, seq int) *list.Element {
 // read message from client
 func (s *server) readRoutine() {
 	for {
-		tmp := make([]byte, MAX_LENGTH)
-		n, addr, err := s.listener.ReadFromUDP(tmp)
-		//fmt.Println("Listen message")
+		select {
+		case <-s.close_read:
+			return
 
-		if err != nil {
-			fmt.Println(err)
+		default:
+
+			tmp := make([]byte, MAX_LENGTH)
+			n, addr, err := s.listener.ReadFromUDP(tmp)
+			//fmt.Println("Server receive message")
+			//fmt.Println("Listen message")
+
+			if err != nil {
+				return
+			}
+
+			var message Message
+			err = json.Unmarshal(tmp[:n], &message)
+			if err != nil {
+				fmt.Println(err)
+			}
+			p := packet_message{packetAddr: addr, message: message}
+			//fmt.Println("service pack", addr.String())
+
+			s.packet_q <- p
+
 		}
 
-		var message Message
-		err = json.Unmarshal(tmp[:n], &message)
-		if err != nil {
-			fmt.Println(err)
-		}
-		p := packet_message{packetAddr: addr, message: message}
-
-		s.packet_q <- p
 	}
 }
 
 // read message from server
 func (s *server) Read() (int, []byte, error) {
 	s.readRequest <- 1
-	message := <-s.read_q
-	return message.ConnID, message.Payload, nil
+
+	select {
+	case message, ok := <-s.read_q:
+		if !ok {
+			return 0, nil, errors.New("server closed")
+		}
+		fmt.Println("Read Message")
+		fmt.Println(message)
+		return message.ConnID, message.Payload, nil
+
+	case id := <-s.drop_id:
+
+		fmt.Println("length of read_q", len(s.read_q))
+		return id, nil, errors.New("Connection drop")
+
+	}
+
+	//message := <-s.read_q
+	//fmt.Println("The messsage", message)
+	//if !ok {
+	//	return -1, nil, errors.New("read error")
+	//}
+
+	//if message.SeqNum == -1 {
+	//	return -1, nil, nil
+	//}
+
 }
 
 func (s *server) Write(connId int, payload []byte) error {
@@ -570,15 +703,24 @@ func (s *server) Write(connId int, payload []byte) error {
 }
 
 func (s *server) CloseConn(connId int) error {
-	fmt.Println("Server: CloseConn", connId)
+	//fmt.Println("Server: CloseConn", connId)
 	s.close_client <- connId
-	//<-sw.close_pending
+	//<-s.close_pending
 
 	return nil
 }
 
 func (s *server) Close() error {
-	fmt.Println("Server: Closing")
+	//fmt.Println("Server: Closing")
+	//
+	//fmt.Println("Server: Closing 1")
+	//if _, ok := <-s.read_q; ok {
+	//	close(s.read_q)
+	//}
 	s.close_server <- 1
+	//fmt.Println("Server: Closing 2")
+	<-s.close_pending
+	//fmt.Println("Server: Closing 3")
+	s.listener.Close()
 	return nil
 }

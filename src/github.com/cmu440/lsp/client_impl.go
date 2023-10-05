@@ -32,6 +32,8 @@ type client struct {
 	sw             SlidingWindow
 	backOffMap     map[int]*BackOff
 	unsentMessages []Message
+	closeRead      chan struct{}
+	closeMain      chan struct{}
 }
 
 // NewClient creates, initiates, and returns a new client. This function
@@ -64,14 +66,16 @@ func NewClient(hostport string, initialSeqNum int, params *Params) (Client, erro
 		connected:      make(chan struct{}),
 		rawMessages:    make(chan Message, RAW_MESSAGE_LENGTH),
 		readPayloads:   make(chan []byte, RAW_MESSAGE_LENGTH),
-		readRequest:    make(chan struct{}),
-		sendPayloads:   make(chan []byte, RAW_MESSAGE_LENGTH),
+		readRequest:    make(chan struct{}, RAW_MESSAGE_LENGTH),
+		sendPayloads:   make(chan []byte),
 		receivedRecord: make([]Message, RECEIVED_WINDOW_SIZE),
 		sn:             initialSeqNum,
 		params:         params,
 		sw:             SlidingWindow{make([]Message, 0)},
 		backOffMap:     make(map[int]*BackOff),
 		unsentMessages: make([]Message, 0),
+		closeRead:      make(chan struct{}),
+		closeMain:      make(chan struct{}),
 	}
 	go c.mainRoutine()
 	go c.readRoutine()
@@ -120,7 +124,7 @@ func (c *client) manageToSend() bool {
 			c.backOffMap[message.SeqNum] = &BackOff{0, 0}
 			// fmt.Println("map: ", c.backOffMap)
 			c.writeToServer(message)
-			fmt.Println(c.connId, "write to server", message.SeqNum)
+			//fmt.Println(c.connId, "write to server", message.SeqNum)
 			isMessageSent = true
 		} else {
 			break
@@ -149,6 +153,9 @@ func (c *client) mainRoutine() {
 
 	for {
 		select {
+		case <-c.closeMain:
+			//fmt.Println("main return")
+			return
 		case <-ticker.C:
 			// fmt.Println(c.connId, "epoch event")
 			if !isMessageSent {
@@ -156,14 +163,16 @@ func (c *client) mainRoutine() {
 			}
 			isMessageSent = false
 			if (idleEpochTime >= c.params.EpochLimit) && (len(c.receivedRecord) == 0) && (len(c.readPayloads) == 0) {
-				// fmt.Println("epoch time:", idleEpochTime)
-				c.Close()
+				//fmt.Println("epoch time:", idleEpochTime)
+				c.conn.Close()
+				close(c.readPayloads)
+				//fmt.Println("client channel closed")
 				return
 			}
 			idleEpochTime++
 			for _, message := range c.sw.window {
 				seqNum := message.SeqNum
-				// fmt.Println(c.backOffMap[seqNum])
+				fmt.Println(c.backOffMap[seqNum])
 				if c.backOffMap[seqNum].epochElapsed >= c.backOffMap[seqNum].currentBackoff {
 					if c.backOffMap[seqNum].currentBackoff == 0 {
 						c.backOffMap[seqNum].currentBackoff = 1
@@ -173,6 +182,9 @@ func (c *client) mainRoutine() {
 							c.backOffMap[seqNum].currentBackoff = c.params.MaxBackOffInterval
 						}
 					}
+					if message.Type == MsgConnect {
+						c.backOffMap[seqNum].currentBackoff = 0
+					}
 					c.backOffMap[seqNum].epochElapsed = 0
 					c.writeToServer(message)
 					fmt.Println(c.connId, "resend to server", message.SeqNum)
@@ -181,7 +193,7 @@ func (c *client) mainRoutine() {
 				c.backOffMap[seqNum].epochElapsed++
 			}
 		case <-c.readRequest:
-			// fmt.Println(c.connId, "read request")
+			//fmt.Println(c.connId, "read request")
 			receiveSeqNum = c.manageReceived(receiveSeqNum)
 
 		case payload := <-c.sendPayloads:
@@ -190,14 +202,13 @@ func (c *client) mainRoutine() {
 			checksum := CalculateChecksum(c.ConnID(), sendingSeqNum, len(payload), payload)
 			message := NewData(c.connId, sendingSeqNum, len(payload), payload, checksum)
 			c.unsentMessages = append(c.unsentMessages, *message)
-			// TODO: check if needs sort
 			if c.manageToSend() == true {
 				isMessageSent = true
 			}
 
 		case message, ok := <-c.rawMessages:
 			idleEpochTime = 0
-			// fmt.Print(c.connId)
+			//fmt.Print(c.connId)
 			if !ok {
 				return // TODO: check if it would successfully return
 			}
@@ -205,7 +216,7 @@ func (c *client) mainRoutine() {
 			case MsgConnect:
 				continue // do nothing
 			case MsgAck:
-				// fmt.Println(" ack received")
+				//fmt.Println(" ack received")
 				if c.connId == -1 {
 					c.connId = message.ConnID
 					heartBeat = *NewAck(c.connId, 0)
@@ -238,7 +249,6 @@ func (c *client) mainRoutine() {
 				}
 			case MsgData:
 				// fmt.Println(" data received")
-				fmt.Println(message.SeqNum)
 				if message.SeqNum >= receiveSeqNum {
 					isDuplicate := false
 					for _, m := range c.receivedRecord {
@@ -254,7 +264,6 @@ func (c *client) mainRoutine() {
 				receiveSeqNum = c.manageReceived(receiveSeqNum)
 				// send ack
 				ackMessage := *NewAck(c.connId, message.SeqNum)
-				fmt.Println("client ack sent")
 				c.writeToServer(ackMessage)
 			}
 		}
@@ -262,19 +271,22 @@ func (c *client) mainRoutine() {
 }
 
 func (c *client) readRoutine() {
-	// fmt.Println("message received")
-	readMessage := make([]byte, MAX_LENGTH)
 	for {
+		readMessage := make([]byte, MAX_LENGTH)
 		n, err := c.conn.Read(readMessage)
 		if err != nil {
-			// fmt.Println(err)
-			return
+			if c.connId == -1 {
+				//fmt.Println(err)
+				continue
+			} else {
+				return
+			}
 		}
 
 		var message Message
 		err = json.Unmarshal(readMessage[:n], &message)
 		if err != nil {
-			// fmt.Println(err)
+			fmt.Println(err)
 		}
 		c.rawMessages <- message
 	}
@@ -326,12 +338,14 @@ func (c *client) Write(payload []byte) error {
 // and Close will be made. In this case, Close must either return a non-nil error,
 // or never return anything.
 func (c *client) Close() error {
-	close(c.readPayloads) // signal read to return
+	//fmt.Println("client closing")
 	err := c.conn.Close() // signal readRoutine to stop, and write to return
+	//fmt.Println("client closing 1")
 	if err != nil {
 		return err
 	}
-	close(c.rawMessages) // signal mainRoutine to stop
+	c.closeMain <- struct{}{}
+	//fmt.Println("client closing 2")
 	return nil
 }
 
