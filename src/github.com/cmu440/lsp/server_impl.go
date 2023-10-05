@@ -36,6 +36,8 @@ type server struct {
 	active_client_map  map[int]int  //connid to epoch
 	message_sent       map[int]bool // in each epoch, True if there is message sent
 	message_backoff    map[messageID]*backoffInfo
+	close_pending      chan int
+	close_id           int
 
 	window_size        int
 	max_unack          int
@@ -50,6 +52,7 @@ type messageID struct {
 type backoffInfo struct {
 	runningBackoff int
 	currentBackoff int
+	total_back_off int
 	m              Message
 }
 type window_state struct {
@@ -121,6 +124,8 @@ func NewServer(port int, params *Params) (Server, error) {
 		active_client_map:  make(map[int]int),
 		message_sent:       make(map[int]bool),
 		message_backoff:    make(map[messageID]*backoffInfo),
+		close_pending:      make(chan int),
+		close_id:           -1,
 
 		window_size:        params.WindowSize,
 		max_unack:          params.MaxUnackedMessages,
@@ -190,7 +195,7 @@ func (s *server) mainRoutine() {
 						if err != nil {
 							fmt.Println(err)
 						}
-						s.message_backoff[messageID{connID: m.ConnID, server_message_seq: m.SeqNum}] = &backoffInfo{currentBackoff: 0, runningBackoff: 0, m: m}
+						s.message_backoff[messageID{connID: m.ConnID, server_message_seq: m.SeqNum}] = &backoffInfo{currentBackoff: 0, runningBackoff: 0, m: m, total_back_off: 0}
 						// update unack count
 						//s.window_state_map[client.connId].unack_count++
 						s.window_map[client.connId] = append(s.window_map[client.connId], m)
@@ -199,6 +204,11 @@ func (s *server) mainRoutine() {
 						})
 
 					}
+
+				}
+				if client.connId == s.close_id && len(s.window_map[client.connId])+len(s.window_outorder[client.connId]) == 0 {
+					s.endConnection(s.close_id)
+					s.close_id = -1
 
 				}
 
@@ -240,12 +250,17 @@ func (s *server) mainRoutine() {
 						// update unack count
 						//s.window_state_map[client.connId].unack_count++
 						s.window_map[client.connId] = append(s.window_map[client.connId], m)
-						s.message_backoff[messageID{connID: m.ConnID, server_message_seq: m.SeqNum}] = &backoffInfo{currentBackoff: 0, runningBackoff: 0, m: m}
+						s.message_backoff[messageID{connID: m.ConnID, server_message_seq: m.SeqNum}] = &backoffInfo{currentBackoff: 0, runningBackoff: 0, m: m, total_back_off: 0}
 						sort.Slice(s.window_map[client.connId], func(i, j int) bool {
 							return s.window_map[client.connId][i].SeqNum < s.window_map[client.connId][j].SeqNum
 						})
 
 					}
+
+				}
+				if s.close_id != -1 && len(s.window_map[s.close_id])+len(s.window_outorder[s.close_id]) == 0 {
+					s.endConnection(s.close_id)
+					s.close_id = -1
 
 				}
 
@@ -351,7 +366,7 @@ func (s *server) mainRoutine() {
 					if err != nil {
 						fmt.Println(err)
 					}
-					s.message_backoff[messageID{connID: message.ConnID, server_message_seq: message.SeqNum}] = &backoffInfo{currentBackoff: 0, runningBackoff: 0, m: message}
+					s.message_backoff[messageID{connID: message.ConnID, server_message_seq: message.SeqNum}] = &backoffInfo{currentBackoff: 0, runningBackoff: 0, m: message, total_back_off: 0}
 
 					// update unack count
 					//s.window_state_map[messageToClient.connId].unack_count++
@@ -400,8 +415,14 @@ func (s *server) mainRoutine() {
 			}
 
 			for k, v := range s.message_backoff {
-				if v.currentBackoff > s.MaxBackOffInterval {
+				if v.total_back_off == s.EpochLimit {
 					s.endConnection(k.connID)
+					continue
+				}
+				if v.currentBackoff == s.MaxBackOffInterval {
+					s.message_backoff[k].runningBackoff = 0
+					continue
+
 				}
 				if v.runningBackoff >= v.currentBackoff {
 					addr := s.connID_to_seq[k.connID].packetAddr
@@ -419,9 +440,12 @@ func (s *server) mainRoutine() {
 					}
 
 					s.message_backoff[k].runningBackoff = 0
+					s.message_backoff[k].total_back_off++
+					continue
 				}
 				if v.runningBackoff < v.currentBackoff {
 					s.message_backoff[k].runningBackoff++
+					s.message_backoff[k].total_back_off++
 				}
 			}
 
@@ -432,9 +456,16 @@ func (s *server) mainRoutine() {
 			}
 		// close connection for the close client
 		case connId := <-s.close_client:
+			if len(s.window_map[connId])+len(s.window_outorder[connId]) == 0 {
+				s.endConnection(connId)
+
+			} else {
+				s.close_id = connId
+
+			}
 			//addr := s.connID_to_seq[connId].packet_addr
 			//cl := client_info{packet_addr: addr, conn_id: connId}
-			s.endConnection(connId)
+
 			// pop message from the read_list
 
 		}
@@ -443,6 +474,7 @@ func (s *server) mainRoutine() {
 }
 
 func (s *server) endConnection(connId int) {
+	delete(s.connection_dup_map, *s.connID_to_seq[connId].packetAddr)
 
 	delete(s.connID_to_seq, connId)
 	delete(s.connid_to_readcounter, connId)
@@ -451,6 +483,9 @@ func (s *server) endConnection(connId int) {
 	//delete(s.window_state_map, connId)
 	delete(s.window_outorder, connId)
 	delete(s.active_client_map, connId)
+	delete(s.message_dup_map, connId)
+	delete(s.active_client_map, connId)
+	delete(s.message_sent, connId)
 
 }
 
@@ -507,6 +542,7 @@ func (s *server) Write(connId int, payload []byte) error {
 func (s *server) CloseConn(connId int) error {
 	fmt.Println("Server: CloseConn", connId)
 	s.close_client <- connId
+	//<-s.close_pending
 
 	return nil
 }
