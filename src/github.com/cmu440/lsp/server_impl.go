@@ -178,6 +178,7 @@ func (s *server) mainRoutine() {
 			//fmt.Println(packet.message.Type)
 			switch packet.message.Type {
 			case MsgAck:
+				fmt.Println("Server ack received ", sn)
 				if _, exist := s.active_client_map[client.connId]; exist {
 					s.active_client_map[client.connId] = 0
 
@@ -213,6 +214,8 @@ func (s *server) mainRoutine() {
 					if len(s.window_map[client.connId]) == 0 || (m.SeqNum < s.window_map[client.connId][0].SeqNum+s.window_size && len(s.window_map[client.connId]) < s.max_unack) {
 						marMessage, _ := json.Marshal(m)
 						_, err := s.listener.WriteToUDP(marMessage, client.packetAddr)
+
+						fmt.Println("Server send", m.SeqNum)
 						if err != nil {
 							fmt.Println(err)
 						}
@@ -220,7 +223,7 @@ func (s *server) mainRoutine() {
 
 						s.message_backoff[messageID{connID: m.ConnID, server_message_seq: m.SeqNum}] = &backoffInfo{currentBackoff: 0, runningBackoff: 0, m: m, total_back_off: 0}
 						// update unack count
-						//sw.window_state_map[client.connId].unack_count++
+						// sw.window_state_map[client.connId].unack_count++
 						s.window_map[client.connId] = append(s.window_map[client.connId], m)
 						sort.Slice(s.window_map[client.connId], func(i, j int) bool {
 							return s.window_map[client.connId][i].SeqNum < s.window_map[client.connId][j].SeqNum
@@ -337,7 +340,7 @@ func (s *server) mainRoutine() {
 				}
 				//fmt.Println("Connect case counter", s.client_id_counter)
 				// initialize map
-				s.connID_to_seq[s.client_id_counter] = &client_seq{packetAddr: packet.packetAddr, serverSeq: sn}
+				s.connID_to_seq[s.client_id_counter] = &client_seq{packetAddr: packet.packetAddr, serverSeq: sn + 1}
 				// message start from sn+1
 				s.connid_to_readcounter[s.client_id_counter] = sn + 1
 				s.connid_to_outorder[s.client_id_counter] = list.New()
@@ -360,6 +363,7 @@ func (s *server) mainRoutine() {
 					s.active_client_map[client.connId] = 0
 
 				}
+				fmt.Println("Server received data", sn)
 
 				ackMessage := *NewAck(client.connId, sn)
 				ackMessageMar, err := json.Marshal(ackMessage)
@@ -420,7 +424,9 @@ func (s *server) mainRoutine() {
 
 				if len(s.window_map[messageToClient.connId]) == 0 || (message.SeqNum < s.window_map[messageToClient.connId][0].SeqNum+s.window_size && len(s.window_map[messageToClient.connId]) < s.max_unack) {
 					marMessage, _ := json.Marshal(message)
+
 					_, err := s.listener.WriteToUDP(marMessage, serverMessageInfo.packetAddr)
+					fmt.Println("Server send", message.SeqNum)
 
 					if err != nil {
 						fmt.Println(err)
@@ -447,7 +453,7 @@ func (s *server) mainRoutine() {
 
 		case <-s.time_signal.C:
 
-			//fmt.Println("epoch event")
+			fmt.Println("server tick")
 			// add epoch to every client state count
 			for k, _ := range s.active_client_map {
 				s.active_client_map[k]++
@@ -493,7 +499,7 @@ func (s *server) mainRoutine() {
 					addr := s.connID_to_seq[k.connID].packetAddr
 					marMessage, _ := json.Marshal(v.m)
 					_, err := s.listener.WriteToUDP(marMessage, addr)
-					fmt.Println("server resent message")
+					fmt.Println("server resent message", v.m.SeqNum)
 
 					if err != nil {
 						fmt.Println(err)
@@ -502,12 +508,12 @@ func (s *server) mainRoutine() {
 					continue
 
 				}
-				fmt.Println("running, current", v.runningBackoff, v.currentBackoff)
+				//fmt.Println("running, current", v.runningBackoff, v.currentBackoff)
 				if v.runningBackoff >= v.currentBackoff {
 					addr := s.connID_to_seq[k.connID].packetAddr
 					marMessage, _ := json.Marshal(v.m)
 					_, err := s.listener.WriteToUDP(marMessage, addr)
-					fmt.Println("server resent message")
+					//fmt.Println("server resent message")
 
 					if err != nil {
 						fmt.Println(err)
@@ -571,7 +577,6 @@ func (s *server) mainRoutine() {
 			//cl := client_info{packet_addr: addr, conn_id: connId}
 
 			// pop message from the read_list
-
 		}
 	}
 	//return nil
@@ -588,6 +593,7 @@ func (s *server) containID(list2 *list.List, id int) bool {
 }
 
 func (s *server) endConnection(connId int) {
+	fmt.Println("end connection call")
 	delete(s.connection_dup_map, s.connID_to_seq[connId].packetAddr.String())
 	var tmp []messageID
 
@@ -630,16 +636,20 @@ func (s *server) readRoutine() {
 	for {
 		select {
 		case <-s.close_read:
+			fmt.Println("Error")
 			return
 
 		default:
 
 			tmp := make([]byte, MAX_LENGTH)
+			fmt.Println("Reading message from client")
 			n, addr, err := s.listener.ReadFromUDP(tmp)
+			fmt.Println("Reading message from client 1")
 			//fmt.Println("Server receive message")
 			//fmt.Println("Listen message")
 
 			if err != nil {
+				fmt.Println("listen error")
 				return
 			}
 
@@ -648,6 +658,21 @@ func (s *server) readRoutine() {
 			if err != nil {
 				fmt.Println(err)
 			}
+			if message.Type == MsgData {
+				if message.Size == len(message.Payload) {
+					checksum := CalculateChecksum(message.ConnID, message.SeqNum, message.Size, message.Payload)
+					if checksum != message.Checksum {
+						//fmt.Println("checksum error")
+						continue
+					}
+				} else if message.Size > len(message.Payload) {
+					//fmt.Println("payload length error")
+					continue
+				} else {
+					message.Payload = message.Payload[:message.Size]
+				}
+			}
+
 			p := packet_message{packetAddr: addr, message: message}
 			//fmt.Println("service pack", addr.String())
 
@@ -667,8 +692,8 @@ func (s *server) Read() (int, []byte, error) {
 		if !ok {
 			return 0, nil, errors.New("server closed")
 		}
-		fmt.Println("Read Message")
-		fmt.Println(message)
+		//fmt.Println("Read Message")
+		//fmt.Println(message)
 		return message.ConnID, message.Payload, nil
 
 	case id := <-s.drop_id:
