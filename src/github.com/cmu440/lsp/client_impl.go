@@ -111,8 +111,6 @@ func (c *client) writeToServer(message Message) {
 	_, err = c.conn.Write(marMessage)
 	if err != nil {
 		fmt.Println(err)
-	} else {
-		fmt.Println("client", c.connId, " sent", message.Type, message.SeqNum)
 	}
 }
 
@@ -138,12 +136,13 @@ func (c *client) manageToSend() bool {
 	return isMessageSent
 }
 
-func (c *client) clientCloseCheck() {
+func (c *client) clientCloseCheck() bool {
 	if len(c.unsentMessages) == 0 && len(c.receivedRecord) == 0 && len(c.readPayloads) == 0 {
 		//fmt.Println("main return")
-		//c.closePending <- struct{}{}
-		return
+		c.closePending <- struct{}{}
+		return true
 	}
+	return false
 }
 
 func (c *client) mainRoutine() {
@@ -168,19 +167,21 @@ func (c *client) mainRoutine() {
 		select {
 		case <-c.closeMain:
 			c.isClosed = true
-			c.clientCloseCheck()
+			if c.clientCloseCheck() {
+				return
+			}
 		case <-ticker.C:
-			fmt.Println("client tick")
+			//fmt.Println("client tick")
 			if !isMessageSent {
-				fmt.Println("client send heartbeat")
+				//fmt.Println("client send heartbeat")
 				c.writeToServer(heartBeat)
 			}
 			isMessageSent = false
 			if (idleEpochTime >= c.params.EpochLimit) && (len(c.receivedRecord) == 0) && (len(c.readPayloads) == 0) {
-				fmt.Println("epoch time:", idleEpochTime)
+				//fmt.Println("epoch time:", idleEpochTime)
 				c.conn.Close()
 				close(c.readPayloads)
-				//c.closePending <- struct{}{}
+				c.closePending <- struct{}{}
 				return
 			}
 			idleEpochTime++
@@ -229,7 +230,7 @@ func (c *client) mainRoutine() {
 			case MsgConnect:
 				continue // do nothing
 			case MsgAck:
-				fmt.Println("client", message.ConnID, " ack received", message.SeqNum)
+				//fmt.Println("client", message.ConnID, " ack received", message.SeqNum)
 				if c.connId == -1 {
 					c.connId = message.ConnID
 					heartBeat = *NewAck(c.connId, 0)
@@ -237,7 +238,9 @@ func (c *client) mainRoutine() {
 				}
 				c.sw.RemoveSeqNum(message.SeqNum)
 				if c.isClosed {
-					c.clientCloseCheck()
+					if c.clientCloseCheck() {
+						return
+					}
 				}
 				// fmt.Println("window after ack:", c.sw.window)
 				delete(c.backOffMap, message.SeqNum)
@@ -254,7 +257,9 @@ func (c *client) mainRoutine() {
 				}
 				c.sw.RemoveBeforeSeqNum(message.SeqNum)
 				if c.isClosed {
-					c.clientCloseCheck()
+					if c.clientCloseCheck() {
+						return
+					}
 				}
 				// fmt.Println("window after ack:", c.sw.window)
 				for key := range c.backOffMap {
@@ -298,6 +303,7 @@ func (c *client) readRoutine() {
 				//fmt.Println(err)
 				continue
 			} else {
+				//fmt.Println(err)
 				return
 			}
 		}
@@ -360,6 +366,7 @@ func (c *client) Read() ([]byte, error) {
 // TODO: what if the server is closed?
 func (c *client) Write(payload []byte) error {
 	c.sendPayloads <- payload
+	//fmt.Println("client write")
 	return nil
 }
 
@@ -371,15 +378,15 @@ func (c *client) Write(payload []byte) error {
 // and Close will be made. In this case, Close must either return a non-nil error,
 // or never return anything.
 func (c *client) Close() error {
+	c.closeMain <- struct{}{}
 	//fmt.Println("client closing")
-	err := c.conn.Close() // signal readRoutine to stop, and write to return
+	<-c.closePending
 	//fmt.Println("client closing 1")
+	err := c.conn.Close() // signal readRoutine to stop, and write to return
 	if err != nil {
 		return err
 	}
-	c.closeMain <- struct{}{}
 	//fmt.Println("client closing 2")
-	//<-c.closePending
 	return nil
 }
 

@@ -178,12 +178,12 @@ func (s *server) mainRoutine() {
 			//fmt.Println(packet.message.Type)
 			switch packet.message.Type {
 			case MsgAck:
-				fmt.Println("Server ack received ", sn)
+				//fmt.Println("Server ack received ", sn)
 				if _, exist := s.active_client_map[client.connId]; exist {
 					s.active_client_map[client.connId] = 0
 
 				} else {
-					fmt.Println("active error")
+					//fmt.Println("active error")
 					continue
 
 				}
@@ -215,7 +215,7 @@ func (s *server) mainRoutine() {
 						marMessage, _ := json.Marshal(m)
 						_, err := s.listener.WriteToUDP(marMessage, client.packetAddr)
 
-						fmt.Println("Server send", m.SeqNum)
+						//fmt.Println("Server send", m.SeqNum)
 						if err != nil {
 							fmt.Println(err)
 						}
@@ -259,7 +259,7 @@ func (s *server) mainRoutine() {
 					//fmt.Println(s.window_outorder)
 
 					if all_zero {
-						fmt.Println("all zero_invoke")
+						//fmt.Println("all zero_invoke")
 						s.close_pending <- 1
 						return
 
@@ -363,7 +363,7 @@ func (s *server) mainRoutine() {
 					s.active_client_map[client.connId] = 0
 
 				}
-				fmt.Println("Server received data", sn)
+				//fmt.Println("Server received data", sn)
 
 				ackMessage := *NewAck(client.connId, sn)
 				ackMessageMar, err := json.Marshal(ackMessage)
@@ -426,7 +426,7 @@ func (s *server) mainRoutine() {
 					marMessage, _ := json.Marshal(message)
 
 					_, err := s.listener.WriteToUDP(marMessage, serverMessageInfo.packetAddr)
-					fmt.Println("Server send", message.SeqNum)
+					//fmt.Println("Server send", message.SeqNum)
 
 					if err != nil {
 						fmt.Println(err)
@@ -453,14 +453,14 @@ func (s *server) mainRoutine() {
 
 		case <-s.time_signal.C:
 
-			fmt.Println("server tick")
+			//fmt.Println("server tick")
 			// add epoch to every client state count
 			for k, _ := range s.active_client_map {
 				s.active_client_map[k]++
 				// end the connection
 				if s.active_client_map[k] >= s.EpochLimit {
-					fmt.Println("read list content")
-					fmt.Println(s.readList.Len())
+					//fmt.Println("read list content")
+					//fmt.Println(s.readList.Len())
 					if !s.containID(s.readList, k) && s.connid_to_outorder[k].Len() == 0 {
 
 						if len(s.drop_id) == 0 {
@@ -482,6 +482,7 @@ func (s *server) mainRoutine() {
 					}
 
 					_, err = s.listener.WriteToUDP(ackMessageMar, s.connID_to_seq[k].packetAddr)
+					//fmt.Println("Server send heartbeat")
 					if err != nil {
 						fmt.Println(err)
 					}
@@ -499,7 +500,7 @@ func (s *server) mainRoutine() {
 					addr := s.connID_to_seq[k.connID].packetAddr
 					marMessage, _ := json.Marshal(v.m)
 					_, err := s.listener.WriteToUDP(marMessage, addr)
-					fmt.Println("server resent message", v.m.SeqNum)
+					//fmt.Println("server resent message", v.m.SeqNum)
 
 					if err != nil {
 						fmt.Println(err)
@@ -555,7 +556,7 @@ func (s *server) mainRoutine() {
 			}
 
 			if all_zero {
-				fmt.Println("zero invoke")
+				//fmt.Println("zero invoke")
 				s.close_pending <- 1
 				return
 			}
@@ -593,7 +594,7 @@ func (s *server) containID(list2 *list.List, id int) bool {
 }
 
 func (s *server) endConnection(connId int) {
-	fmt.Println("end connection call")
+	//fmt.Println("end connection call")
 	delete(s.connection_dup_map, s.connID_to_seq[connId].packetAddr.String())
 	var tmp []messageID
 
@@ -636,20 +637,20 @@ func (s *server) readRoutine() {
 	for {
 		select {
 		case <-s.close_read:
-			fmt.Println("Error")
+			//fmt.Println("Error")
 			return
 
 		default:
 
 			tmp := make([]byte, MAX_LENGTH)
-			fmt.Println("Reading message from client")
+			//fmt.Println("Reading message from client")
 			n, addr, err := s.listener.ReadFromUDP(tmp)
-			fmt.Println("Reading message from client 1")
+			//fmt.Println("Reading message from client 1")
 			//fmt.Println("Server receive message")
 			//fmt.Println("Listen message")
 
 			if err != nil {
-				fmt.Println("listen error")
+				//fmt.Println("listen error")
 				return
 			}
 
@@ -698,7 +699,7 @@ func (s *server) Read() (int, []byte, error) {
 
 	case id := <-s.drop_id:
 
-		fmt.Println("length of read_q", len(s.read_q))
+		//fmt.Println("length of read_q", len(s.read_q))
 		return id, nil, errors.New("Connection drop")
 
 	}
