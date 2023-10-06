@@ -171,8 +171,9 @@ func (c *client) mainRoutine() {
 			}
 			idleEpochTime++
 			for _, message := range c.sw.window {
+
 				seqNum := message.SeqNum
-				fmt.Println(c.backOffMap[seqNum])
+				//fmt.Println(c.backOffMap[seqNum])
 				if c.backOffMap[seqNum].epochElapsed >= c.backOffMap[seqNum].currentBackoff {
 					if c.backOffMap[seqNum].currentBackoff == 0 {
 						c.backOffMap[seqNum].currentBackoff = 1
@@ -187,7 +188,7 @@ func (c *client) mainRoutine() {
 					}
 					c.backOffMap[seqNum].epochElapsed = 0
 					c.writeToServer(message)
-					fmt.Println(c.connId, "resend to server", message.SeqNum)
+					//fmt.Println(c.connId, "resend to server", message.SeqNum)
 					isMessageSent = true
 				}
 				c.backOffMap[seqNum].epochElapsed++

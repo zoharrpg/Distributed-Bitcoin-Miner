@@ -192,7 +192,7 @@ func (s *server) mainRoutine() {
 				//fmt.Println("server slice")
 				//fmt.Println(s.window_map[client.connId])
 				if len(s.window_map[client.connId]) == length {
-					fmt.Println("Slice Find Error")
+					//fmt.Println("Slice Find Error")
 				}
 
 				//sw.window_state_map[client.connId].unack_index++
@@ -202,7 +202,7 @@ func (s *server) mainRoutine() {
 				if _, exist := s.message_backoff[m_id]; exist {
 					delete(s.message_backoff, m_id)
 				} else {
-					fmt.Println("backoff map error")
+					//fmt.Println("backoff map error")
 					continue
 
 				}
@@ -287,7 +287,7 @@ func (s *server) mainRoutine() {
 				}
 				s.window_map[client.connId] = removeFromSlice_CAck(s.window_map[client.connId], sn)
 				if len(s.window_map[client.connId]) == length {
-					fmt.Println("Slice Find Error")
+					//fmt.Println("Slice Find Error")
 				}
 				//sw.window_state_map[client.connId].unack_index = sw.window_map[client.connId][0].SeqNum
 				//sw.window_state_map[client.connId].unack_count -= length - len(sw.window_map[client.connId])
@@ -355,7 +355,7 @@ func (s *server) mainRoutine() {
 				s.client_id_counter++
 
 			case MsgData:
-				fmt.Println("Get the data")
+				//fmt.Println("Get the data")
 				if _, exist := s.active_client_map[client.connId]; exist {
 					s.active_client_map[client.connId] = 0
 
