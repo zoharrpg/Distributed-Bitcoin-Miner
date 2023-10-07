@@ -341,7 +341,6 @@ func (c *client) Read() ([]byte, error) {
 // If Close has been called on the client, it is safe to assume
 // no further calls to Write will be made. In this case,
 // Write must either return a non-nil error, or never return anything.
-// TODO: what if the server is closed?
 func (c *client) Write(payload []byte) error {
 	c.sendPayloads <- payload
 	return nil
@@ -362,60 +361,4 @@ func (c *client) Close() error {
 		return err
 	}
 	return nil
-}
-
-type BackOff struct {
-	currentBackoff int
-	epochElapsed   int
-}
-
-type BySeqNum []Message
-
-func (a BySeqNum) Len() int           { return len(a) }
-func (a BySeqNum) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-func (a BySeqNum) Less(i, j int) bool { return a[i].SeqNum < a[j].SeqNum }
-
-type SlidingWindow struct {
-	window []Message
-}
-
-func (s *SlidingWindow) AddMessage(m Message) {
-	s.window = append(s.window, m)
-	sort.Sort(BySeqNum(s.window)) // TODO: check if it needs sort
-}
-
-func (s *SlidingWindow) getIndex(sn int) int {
-	for i := 0; i < len(s.window); i++ {
-		if s.window[i].SeqNum == sn {
-			return i
-		}
-	}
-	return -1
-}
-
-func (s *SlidingWindow) RemoveSeqNum(sn int) {
-	i := s.getIndex(sn)
-	if i == -1 {
-		return
-	}
-	s.window = append(s.window[:i], s.window[i+1:]...)
-}
-
-func (s *SlidingWindow) RemoveBeforeSeqNum(sn int) {
-	i := s.getIndex(sn)
-	if i == -1 {
-		return
-	}
-	s.window = s.window[i+1:]
-}
-
-func (s *SlidingWindow) GetSize() int {
-	return len(s.window)
-}
-
-func (s *SlidingWindow) GetWindowSize() int {
-	if len(s.window) == 0 {
-		return 0
-	}
-	return s.window[len(s.window)-1].SeqNum - s.window[0].SeqNum + 1
 }
