@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"time"
 
@@ -183,9 +184,9 @@ func (c *client) mainRoutine() {
 						c.backOffMap[seqNum].currentBackoff = 1
 					} else {
 						c.backOffMap[seqNum].currentBackoff = c.backOffMap[seqNum].currentBackoff * 2
-						if c.backOffMap[seqNum].currentBackoff > c.params.MaxBackOffInterval {
-							c.backOffMap[seqNum].currentBackoff = c.params.MaxBackOffInterval
-						}
+					}
+					if c.backOffMap[seqNum].currentBackoff > c.params.MaxBackOffInterval {
+						c.backOffMap[seqNum].currentBackoff = c.params.MaxBackOffInterval
 					}
 					if message.Type == MsgConnect {
 						c.backOffMap[seqNum].currentBackoff = 0
@@ -275,14 +276,14 @@ func (c *client) mainRoutine() {
 }
 
 func (c *client) readRoutine() {
+	readMessage := make([]byte, MAX_LENGTH)
 	for {
-		readMessage := make([]byte, MAX_LENGTH)
 		n, err := c.conn.Read(readMessage)
 		if err != nil {
 			if c.connId == -1 {
 				continue
 			} else {
-				fmt.Println(err)
+				log.Println(err)
 				return
 			}
 		}
@@ -290,7 +291,7 @@ func (c *client) readRoutine() {
 		var message Message
 		err = json.Unmarshal(readMessage[:n], &message)
 		if err != nil {
-			fmt.Println(err)
+			log.Println(err)
 		}
 		if message.Type == MsgData {
 			if message.Size == len(message.Payload) {
@@ -354,9 +355,9 @@ func (c *client) Write(payload []byte) error {
 // and Close will be made. In this case, Close must either return a non-nil error,
 // or never return anything.
 func (c *client) Close() error {
-	c.closeMain <- struct{}{}
-	<-c.closePending
-	err := c.conn.Close() // signal readRoutine to stop, and write to return
+	c.closeMain <- struct{}{} // signal mainRoutine to stop
+	<-c.closePending          // wait for mainRoutine to stop
+	err := c.conn.Close()     // signal readRoutine to stop
 	if err != nil {
 		return err
 	}
