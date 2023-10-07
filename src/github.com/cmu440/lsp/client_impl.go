@@ -14,7 +14,7 @@ import (
 
 const (
 	MAX_LENGTH           = 2000
-	RAW_MESSAGE_LENGTH   = 1
+	CHANNEL_LENGTH       = 1
 	RECEIVED_WINDOW_SIZE = 0
 )
 
@@ -66,9 +66,9 @@ func NewClient(hostport string, initialSeqNum int, params *Params) (Client, erro
 		conn:           connection,
 		connId:         -1,
 		connected:      make(chan struct{}),
-		rawMessages:    make(chan Message, RAW_MESSAGE_LENGTH),
-		readPayloads:   make(chan []byte, RAW_MESSAGE_LENGTH),
-		readRequest:    make(chan struct{}, RAW_MESSAGE_LENGTH),
+		rawMessages:    make(chan Message, CHANNEL_LENGTH),
+		readPayloads:   make(chan []byte, CHANNEL_LENGTH),
+		readRequest:    make(chan struct{}, CHANNEL_LENGTH),
 		sendPayloads:   make(chan []byte),
 		receivedRecord: make([]Message, RECEIVED_WINDOW_SIZE),
 		sn:             initialSeqNum,
@@ -77,7 +77,7 @@ func NewClient(hostport string, initialSeqNum int, params *Params) (Client, erro
 		backOffMap:     make(map[int]*BackOff),
 		unsentMessages: make([]Message, 0),
 		closeRead:      make(chan struct{}),
-		closeMain:      make(chan struct{}, RAW_MESSAGE_LENGTH),
+		closeMain:      make(chan struct{}, CHANNEL_LENGTH),
 		closePending:   make(chan struct{}),
 		isClosed:       false,
 	}
@@ -89,13 +89,11 @@ func NewClient(hostport string, initialSeqNum int, params *Params) (Client, erro
 }
 
 func (c *client) manageReceived(receiveSeqNum int) int {
-	//fmt.Println("client channel, queue:", len(c.readPayloads), len(c.receivedRecord))
 	if len(c.readPayloads) != 0 {
 		return receiveSeqNum
 	}
 	sort.Sort(BySeqNum(c.receivedRecord))
 	if len(c.receivedRecord) > 0 && c.receivedRecord[0].SeqNum == receiveSeqNum {
-		//fmt.Println("client read seqNum: ", receiveSeqNum, "payload: ", c.receivedRecord[0].Payload)
 		c.readPayloads <- c.receivedRecord[0].Payload
 		c.receivedRecord = c.receivedRecord[1:]
 		receiveSeqNum++
@@ -106,7 +104,7 @@ func (c *client) manageReceived(receiveSeqNum int) int {
 func (c *client) writeToServer(message Message) {
 	marMessage, err := json.Marshal(message)
 	if err != nil {
-		// fmt.Println(err)
+		fmt.Println(err)
 	}
 	_, err = c.conn.Write(marMessage)
 	if err != nil {
@@ -125,9 +123,7 @@ func (c *client) manageToSend() bool {
 			c.unsentMessages = c.unsentMessages[1:]
 			c.sw.AddMessage(message)
 			c.backOffMap[message.SeqNum] = &BackOff{0, 0}
-			// fmt.Println("map: ", c.backOffMap)
 			c.writeToServer(message)
-			//fmt.Println(c.connId, "write to server", message.SeqNum)
 			isMessageSent = true
 		} else {
 			break
@@ -138,7 +134,6 @@ func (c *client) manageToSend() bool {
 
 func (c *client) clientCloseCheck() bool {
 	if len(c.unsentMessages) == 0 && len(c.receivedRecord) == 0 && len(c.readPayloads) == 0 {
-		//fmt.Println("main return")
 		c.closePending <- struct{}{}
 		return true
 	}
@@ -156,7 +151,6 @@ func (c *client) mainRoutine() {
 	isMessageSent = true
 	c.sw.AddMessage(*connectRequest)
 	c.backOffMap[connectRequest.SeqNum] = &BackOff{0, 0}
-	// fmt.Println("map: ", c.backOffMap)
 
 	ticker := time.NewTicker(time.Duration(c.params.EpochMillis) * time.Millisecond)
 	defer ticker.Stop()
@@ -171,15 +165,12 @@ func (c *client) mainRoutine() {
 				return
 			}
 		case <-ticker.C:
-			//fmt.Println("client tick")
 			if !isMessageSent {
-				//fmt.Println("client send heartbeat")
 				c.writeToServer(heartBeat)
 			}
 			isMessageSent = false
 			if (idleEpochTime >= c.params.EpochLimit) && (len(c.receivedRecord) == 0) && (len(c.readPayloads) == 0) {
-				//fmt.Println("epoch time:", idleEpochTime)
-				c.conn.Close()
+				c.conn.Close() // TODO: check if it's redundant
 				close(c.readPayloads)
 				c.closePending <- struct{}{}
 				return
@@ -201,17 +192,14 @@ func (c *client) mainRoutine() {
 					}
 					c.backOffMap[seqNum].epochElapsed = 0
 					c.writeToServer(message)
-					//fmt.Println(c.connId, "resend to server", message.SeqNum)
 					isMessageSent = true
 				}
 				c.backOffMap[seqNum].epochElapsed++
 			}
 		case <-c.readRequest:
-			//fmt.Println(c.connId, "read request")
 			receiveSeqNum = c.manageReceived(receiveSeqNum)
 
 		case payload := <-c.sendPayloads:
-			//fmt.Println(c.connId, "Data add to queue")
 			checksum := CalculateChecksum(c.ConnID(), sendingSeqNum, len(payload), payload)
 			message := NewData(c.connId, sendingSeqNum, len(payload), payload, checksum)
 			sendingSeqNum++
@@ -222,15 +210,13 @@ func (c *client) mainRoutine() {
 
 		case message, ok := <-c.rawMessages:
 			idleEpochTime = 0
-			//fmt.Print(c.connId)
 			if !ok {
 				return // TODO: check if it would successfully return
 			}
 			switch message.Type {
 			case MsgConnect:
-				continue // do nothing
+				continue
 			case MsgAck:
-				//fmt.Println("client", message.ConnID, " ack received", message.SeqNum)
 				if c.connId == -1 {
 					c.connId = message.ConnID
 					heartBeat = *NewAck(c.connId, 0)
@@ -242,14 +228,11 @@ func (c *client) mainRoutine() {
 						return
 					}
 				}
-				// fmt.Println("window after ack:", c.sw.window)
 				delete(c.backOffMap, message.SeqNum)
-				// fmt.Println("map: ", c.backOffMap)
 				if c.manageToSend() == true {
 					isMessageSent = true
 				}
 			case MsgCAck:
-				// fmt.Println(" cack received")
 				if c.connId == -1 {
 					c.connId = message.ConnID
 					heartBeat = *NewAck(c.connId, 0)
@@ -261,18 +244,15 @@ func (c *client) mainRoutine() {
 						return
 					}
 				}
-				// fmt.Println("window after ack:", c.sw.window)
 				for key := range c.backOffMap {
 					if key <= message.SeqNum {
 						delete(c.backOffMap, key)
 					}
 				}
-				// fmt.Println("map: ", c.backOffMap)
 				if c.manageToSend() == true {
 					isMessageSent = true
 				}
 			case MsgData:
-				//fmt.Println(" data received, SeqNum", message.SeqNum)
 				if message.SeqNum >= receiveSeqNum {
 					isDuplicate := false
 					for _, m := range c.receivedRecord {
@@ -300,10 +280,9 @@ func (c *client) readRoutine() {
 		n, err := c.conn.Read(readMessage)
 		if err != nil {
 			if c.connId == -1 {
-				//fmt.Println(err)
 				continue
 			} else {
-				//fmt.Println(err)
+				fmt.Println(err)
 				return
 			}
 		}
@@ -315,13 +294,11 @@ func (c *client) readRoutine() {
 		}
 		if message.Type == MsgData {
 			if message.Size == len(message.Payload) {
-				checksum := CalculateChecksum(c.ConnID(), message.SeqNum, message.Size, message.Payload)
+				checksum := CalculateChecksum(message.ConnID, message.SeqNum, message.Size, message.Payload)
 				if checksum != message.Checksum {
-					//fmt.Println("checksum error")
 					continue
 				}
 			} else if message.Size > len(message.Payload) {
-				//fmt.Println("payload length error")
 				continue
 			} else {
 				message.Payload = message.Payload[:message.Size]
@@ -366,7 +343,6 @@ func (c *client) Read() ([]byte, error) {
 // TODO: what if the server is closed?
 func (c *client) Write(payload []byte) error {
 	c.sendPayloads <- payload
-	//fmt.Println("client write")
 	return nil
 }
 
@@ -379,14 +355,11 @@ func (c *client) Write(payload []byte) error {
 // or never return anything.
 func (c *client) Close() error {
 	c.closeMain <- struct{}{}
-	//fmt.Println("client closing")
 	<-c.closePending
-	//fmt.Println("client closing 1")
 	err := c.conn.Close() // signal readRoutine to stop, and write to return
 	if err != nil {
 		return err
 	}
-	//fmt.Println("client closing 2")
 	return nil
 }
 
@@ -419,18 +392,6 @@ func (s *SlidingWindow) getIndex(sn int) int {
 	return -1
 }
 
-func (s *SlidingWindow) PeakSeqNum() int {
-	return s.window[0].SeqNum
-}
-
-func (s *SlidingWindow) Find(sn int) Message {
-	i := s.getIndex(sn)
-	if i == -1 {
-		return Message{}
-	}
-	return s.window[i]
-}
-
 func (s *SlidingWindow) RemoveSeqNum(sn int) {
 	i := s.getIndex(sn)
 	if i == -1 {
@@ -456,10 +417,4 @@ func (s *SlidingWindow) GetWindowSize() int {
 		return 0
 	}
 	return s.window[len(s.window)-1].SeqNum - s.window[0].SeqNum + 1
-}
-
-func (s *SlidingWindow) print() {
-	// fmt.Printf("size: %d ", s.GetSize())
-	// fmt.Printf(", window size: %d ", s.GetWindowSize())
-	// fmt.Printf("window: %v\n", s.window)
 }
