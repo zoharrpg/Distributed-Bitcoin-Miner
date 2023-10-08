@@ -14,7 +14,7 @@ func removeFromSlice(s []Message, seq int) []Message {
 	return s
 }
 
-func removeFromSlice_CAck(s []Message, seq int) []Message {
+func removeFromSliceCAck(s []Message, seq int) []Message {
 	for i, m := range s {
 		if m.SeqNum == seq {
 			return s[i+1:]
@@ -24,11 +24,11 @@ func removeFromSlice_CAck(s []Message, seq int) []Message {
 }
 
 type MessageId struct {
-	connId             int
-	server_message_seq int
+	connId int
+	seqNum int
 }
 
-type BackoffInfo struct {
+type BackOffInfo struct {
 	runningBackoff int
 	currentBackoff int
 	totalBackOff   int
