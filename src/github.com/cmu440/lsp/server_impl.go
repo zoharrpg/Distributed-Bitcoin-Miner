@@ -15,30 +15,33 @@ import (
 	"github.com/cmu440/lspnet"
 )
 
+// The server type represents a server in a network that handles incoming messages from clients and
+// manages various channels and data structures for message handling.
 type server struct {
-	listener         *lspnet.UDPConn      // server listener
-	rawMessages      chan MessagePacket   // receive message from client channel
-	closeMain        chan int             // close server signal
-	closeClient      chan int             // close client signal
-	readMessages     chan Message         // Read channel
-	addrAndSeqNum    map[int]*Client_seq  // ID to client seq map, to get client seq by connId
-	readCounters     map[int]int          // read counter for each connId
-	outOfOrderList   map[int]*list.List   // outorder list for each connId
-	windows          map[int][]Message    // slide window for each client
-	windowOutOfOrder map[int][]Message    // slide window outorder list
-	isMessageSent    map[int]bool         // in each epoch, True if there is message sent
-	sendMessages     chan SendPackage     // send message from server queue channel for send message from server
-	readList         *list.List           // store ordered message
-	readRequest      chan int             // send read signal
-	messageDupMap    map[int]map[int]bool // id to receive request seq
-	connectionDupMap map[string]bool
-	idleEpochElapsed map[int]int //connid to epoch
-	messageBackoff   map[MessageId]*BackOffInfo
-	closePending     chan int
-	closeId          int
-	isClosed         bool
-	droppedId        chan int
-	params           *Params
+	listener         *lspnet.UDPConn            // server listener
+	rawMessages      chan MessagePacket         // receive message from client channel
+	closeMain        chan int                   // close server signal
+	closeClient      chan int                   // close client signal
+	readMessages     chan Message               // Read channel
+	addrAndSeqNum    map[int]*Client_seq        // ID to client seq map, to get client seq by connId
+	readCounters     map[int]int                // read counter for each connId
+	outOfOrderList   map[int]*list.List         // outorder list for each connId
+	windows          map[int][]Message          // slide window for each client
+	windowOutOfOrder map[int][]Message          // slide window outorder list
+	isMessageSent    map[int]bool               // in each epoch, True if there is message sent
+	sendMessages     chan SendPackage           // send message from server queue channel for send message from server
+	readList         *list.List                 // store ordered message
+	readRequest      chan int                   // send read signal
+	messageDupMap    map[int]map[int]bool       // id to receive request seq
+	connectionDupMap map[string]bool            // // The above code is declaring a variable called `connectionDupMap` which is a map with string keys and boolean values.
+	idleEpochElapsed map[int]int                //connid to epoch
+	messageBackoff   map[MessageId]*BackOffInfo // The above code is declaring a variable named "messageBackoff" which is a map with keys of type "MessageId" and values of type "*BackOffInfo".
+
+	closePending chan int // wait for message sent and acknowledgement.
+	closeId      int      // a variable called "closeId" of type int.
+	isClosed     bool     // a boolean variable named "isClosed" and initializing it to false.
+	droppedId    chan int // drop connection id channel
+	params       *Params  // params for server
 }
 
 // NewServer creates, initiates, and returns a new server. This function should
@@ -89,6 +92,10 @@ func NewServer(port int, params *Params) (Server, error) {
 	return &se, err
 }
 
+// The above code is a method called `manageReadList` in a server struct. It checks if the length of
+// the `readMessages` slice is 0 and if the `readList` linked list has any elements. If both conditions
+// are true, it removes the first element from the `readList` linked list, assigns it to the variable
+// `message`, and sends it to the `readMessages` channel.
 func (s *server) manageReadList() {
 	if len(s.readMessages) == 0 && s.readList.Len() > 0 {
 		head := s.readList.Front()
@@ -98,6 +105,10 @@ func (s *server) manageReadList() {
 	}
 }
 
+// The above code is defining a method called `checkClosed` for a struct called `server`. This method
+// checks if all the windows and windowOutOfOrder slices in the `server` struct are empty. If they are
+// empty, it sends a value of 1 to the `closePending` channel and returns true. Otherwise, it returns
+// false.
 func (s *server) checkClosed() bool {
 	isCleared := true
 	for _, v := range s.windows {
@@ -120,26 +131,45 @@ func (s *server) checkClosed() bool {
 	return false
 }
 
-// handle message for each case
+// The above code is the main routine of a server in a network communication system. It handles various
+// types of messages received from clients and performs corresponding actions.
 func (s *server) mainRoutine() {
+	// The above code is creating a new ticker in Go. A ticker is a channel-based timer that will send a
+	// value periodically based on the specified duration. In this case, the ticker will send a value
+	// every `s.params.EpochMillis` milliseconds.
 	ticker := time.NewTicker(time.Duration(s.params.EpochMillis) * time.Millisecond)
+	// The above code is declaring a variable called `clientIdCounter` and initializing it with a value of
+	// 1.
+	// The above code is declaring a variable called `clientIdCounter` and initializing it with a value of
+	// 1.
 	clientIdCounter := 1
+	// The above code is using the `defer` keyword to schedule the `Stop()` method of the `ticker` object
+	// to be called when the surrounding function returns. This is typically used to ensure that resources
+	// are properly cleaned up or released at the end of a function, regardless of how the function exits
+	// (e.g. through a return statement or an error).
 	defer ticker.Stop()
 	for {
 		select {
+		// The above code is handling different types of messages received by a server in a Go program.
 		case packet := <-s.rawMessages:
 			message := packet.message
 			sn := message.SeqNum
 			messageAddr := packet.packetAddr
 			connId := message.ConnID
 			switch packet.message.Type {
+			// The above code is handling the MsgAck case in a switch statement. It performs the following
+			// actions:
 			case MsgAck:
+				// The above code is checking if a key `connId` exists in the `idleEpochElapsed` map. If the key
+				// exists, it sets the value associated with that key to 0. If the key does not exist, it continues
+				// to the next iteration of the loop.
 				if _, exist := s.idleEpochElapsed[connId]; exist {
 					s.idleEpochElapsed[connId] = 0
 				} else {
 					continue // TODO: check if this can be removed
 				}
 
+				// The above code is removing an element from a slice and deleting a key-value pair from a map.
 				s.windows[connId] = removeFromSlice(s.windows[connId], sn)
 				messageId := MessageId{connId: connId, seqNum: sn}
 				if _, exist := s.messageBackoff[messageId]; exist {
@@ -148,6 +178,12 @@ func (s *server) mainRoutine() {
 					continue
 				}
 
+				// The above code is part of a function in the Go programming language. It is iterating over a
+				// slice of messages in `s.windowOutOfOrder[connId]`. For each message, it checks if the
+				// `s.windows[connId]` slice is empty or if the message's sequence number is within the window size
+				// and the number of unacknowledged messages is less than the maximum allowed. If the conditions
+				// are met, it marshals the message into JSON, writes it to a UDP connection, and updates various
+				// data structures and variables.
 				var tmp []int
 				for _, m := range s.windowOutOfOrder[connId] {
 					if len(s.windows[connId]) == 0 || (m.SeqNum < s.windows[connId][0].SeqNum+s.params.WindowSize && len(s.windows[connId]) < s.params.MaxUnackedMessages) {
@@ -178,6 +214,8 @@ func (s *server) mainRoutine() {
 					return
 				}
 
+			// The above code is handling the MsgCAck case in a switch statement. It performs the following
+			// actions:
 			case MsgCAck:
 				if _, exist := s.idleEpochElapsed[connId]; exist {
 					s.idleEpochElapsed[connId] = 0
@@ -193,8 +231,16 @@ func (s *server) mainRoutine() {
 					}
 				}
 
+				// The above code is removing an element from a slice called `s.windows[connId]`. The element being
+				// removed is determined by the value of `sn`.
 				s.windows[connId] = removeFromSliceCAck(s.windows[connId], sn)
 
+				// The above code is iterating over messages in the `windowOutOfOrder` slice for a specific
+				// `connId`. It checks if the `windows` slice for that `connId` is empty or if the current
+				// message's sequence number is within the window range and the number of unacknowledged messages
+				// is less than the maximum allowed. If the conditions are met, it marshals the message into JSON,
+				// writes it to the UDP listener, updates the `windows` slice and `messageBackoff` map, and sorts
+				// the `windows` slice based on sequence number.
 				for _, m := range s.windowOutOfOrder[connId] {
 					if len(s.windows[connId]) == 0 || (m.SeqNum < s.windows[connId][0].SeqNum+s.params.WindowSize && len(s.windows[connId]) < s.params.MaxUnackedMessages) {
 						marMessage, _ := json.Marshal(m)
@@ -221,6 +267,11 @@ func (s *server) mainRoutine() {
 				}
 
 			case MsgConnect:
+				// The above code is sending an acknowledgment message to a client. It first creates an
+				// acknowledgment message using the client ID counter and sequence number. Then, it marshals the
+				// acknowledgment message into JSON format. Next, it writes the marshaled acknowledgment message to
+				// the UDP listener. If the write operation is successful, it initializes various data structures
+				// and maps related to the client's connection. Finally, it increments the client ID counter.
 				ackMessage := *NewAck(clientIdCounter, sn)
 				ackMessageMar, err := json.Marshal(ackMessage)
 				if err != nil {
@@ -252,10 +303,16 @@ func (s *server) mainRoutine() {
 				clientIdCounter++
 
 			case MsgData:
+				// The above code is handling the reception of messages in a network communication system. Here is
+				// a breakdown of what it does:
+
+				// The above code is checking if a key `connId` exists in the `s.idleEpochElapsed` map. If the key
+				// exists, it sets the value associated with that key to 0.
 				if _, exist := s.idleEpochElapsed[connId]; exist {
 					s.idleEpochElapsed[connId] = 0
 				}
 
+				// The above code is sending an acknowledgment message to a specific UDP address.
 				ackMessage := *NewAck(connId, sn)
 				ackMessageMar, err := json.Marshal(ackMessage)
 				if err != nil {
@@ -296,6 +353,8 @@ func (s *server) mainRoutine() {
 				}
 				s.manageReadList()
 			}
+		// The above code is using a select statement to wait for a read request on the channel
+		// `s.readRequest`. Once a read request is received, it calls the `manageReadList()` function.
 		case <-s.readRequest:
 			s.manageReadList()
 		case sendPackage := <-s.sendMessages:
@@ -306,6 +365,8 @@ func (s *server) mainRoutine() {
 				seqNum := serverMessageInfo.serverSeq
 				checksum := CalculateChecksum(connId, seqNum, len(sendPackage.payload), sendPackage.payload)
 				message := *NewData(connId, seqNum, len(sendPackage.payload), sendPackage.payload, checksum)
+
+				// check window
 
 				if len(s.windows[connId]) == 0 || (seqNum < s.windows[connId][0].SeqNum+s.params.WindowSize && len(s.windows[connId]) < s.params.MaxUnackedMessages) {
 					marMessage, _ := json.Marshal(message)
@@ -367,6 +428,8 @@ func (s *server) mainRoutine() {
 				s.isMessageSent[k] = false
 			}
 
+			// backoff timer
+
 			for k, v := range s.messageBackoff {
 				if v.totalBackOff == s.params.EpochLimit {
 					s.endConnection(k.connId)
@@ -414,6 +477,8 @@ func (s *server) mainRoutine() {
 	}
 }
 
+// The above code is defining a method called `containID` for a struct `server`. This method takes a
+// pointer to a linked list `list2` and an integer `id` as parameters.
 func (s *server) containID(list2 *list.List, id int) bool {
 	for element := list2.Front(); element != nil; element = element.Next() {
 		if element.Value.(Message).ConnID == id {
@@ -423,6 +488,8 @@ func (s *server) containID(list2 *list.List, id int) bool {
 	return false
 }
 
+// The above code is defining a method called "endConnection" for a struct called "server". This method
+// takes an integer parameter called "connId".
 func (s *server) endConnection(connId int) {
 	delete(s.connectionDupMap, s.addrAndSeqNum[connId].packetAddr.String())
 	var tmp []MessageId
@@ -448,7 +515,9 @@ func (s *server) endConnection(connId int) {
 
 }
 
-// findElement find next element in out order list that match seq number
+// The above code is defining a method called `findElement` for a struct called `server`. This method
+// takes two parameters: `connId` of type `int` and `seq` of type `int`. The method returns a pointer
+// to a `list.Element`.
 func (s *server) findElement(connId int, seq int) *list.Element {
 	for message := s.outOfOrderList[connId].Front(); message != nil; message = message.Next() {
 		if message.Value.(Message).SeqNum == seq {
@@ -459,7 +528,12 @@ func (s *server) findElement(connId int, seq int) *list.Element {
 	return nil
 }
 
-// read message from client
+// The above code is implementing a read routine for a server in Go. It listens for incoming UDP
+// messages using a UDP listener. When a message is received, it is unmarshalled from JSON into a
+// Message struct. If the message type is MsgData, it checks the payload size and verifies the
+// checksum. If the payload size is larger than the actual payload, it discards the message. If the
+// payload size is smaller, it truncates the payload to the correct size. Finally, it sends the
+// received message along with the packet address to a channel for further processing.
 func (s *server) readRoutine() {
 	readMessage := make([]byte, MAX_LENGTH)
 	for {
@@ -491,7 +565,8 @@ func (s *server) readRoutine() {
 	}
 }
 
-// read message from server
+// The above code is defining a method called `Read()` for a server object. This method is used to read
+// messages from the server.
 func (s *server) Read() (int, []byte, error) {
 	s.readRequest <- 1
 	select {
@@ -506,17 +581,24 @@ func (s *server) Read() (int, []byte, error) {
 	}
 }
 
+// The above code is defining a method called "Write" for a server struct in the Go programming
+// language. This method takes two parameters: "connId" of type int and "payload" of type []byte.
 func (s *server) Write(connId int, payload []byte) error {
 	sp := SendPackage{connId: connId, payload: payload}
 	s.sendMessages <- sp
 	return nil
 }
 
+// The above code is defining a method called CloseConn on a struct called server. This method takes an
+// integer parameter called connId and returns an error. Inside the method, it sends the connId to a
+// channel called closeClient.
 func (s *server) CloseConn(connId int) error {
 	s.closeClient <- connId
 	return nil
 }
 
+// The above code is defining a method called `Close` for a server object. This method is responsible
+// for closing the server and all its connections.
 func (s *server) Close() error {
 	s.closeMain <- 1          // signal main routine to close
 	<-s.closePending          // wait for all connection to close
