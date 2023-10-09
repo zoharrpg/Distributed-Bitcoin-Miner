@@ -5,7 +5,6 @@ package lsp
 import (
 	"encoding/json"
 	"errors"
-	"log"
 	"sort"
 	"time"
 
@@ -105,11 +104,9 @@ func (c *client) manageReceived(receiveSeqNum int) int {
 func (c *client) writeToServer(message Message) {
 	marMessage, err := json.Marshal(message)
 	if err != nil {
-		log.Println(err)
 	}
 	_, err = c.conn.Write(marMessage)
 	if err != nil {
-		log.Println(err)
 	}
 }
 
@@ -282,7 +279,6 @@ func (c *client) readRoutine() {
 			if c.connId == -1 {
 				continue
 			} else {
-				log.Println(err)
 				return
 			}
 		}
@@ -290,7 +286,6 @@ func (c *client) readRoutine() {
 		var message Message
 		err = json.Unmarshal(readMessage[:n], &message)
 		if err != nil {
-			log.Println(err)
 		}
 		if message.Type == MsgData {
 			if message.Size == len(message.Payload) {

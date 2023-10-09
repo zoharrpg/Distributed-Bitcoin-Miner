@@ -5,7 +5,6 @@ package lsp
 import (
 	"encoding/json"
 	"errors"
-	"log"
 	"sort"
 	"strconv"
 	"time"
@@ -186,7 +185,6 @@ func (s *server) mainRoutine() {
 						marMessage, _ := json.Marshal(m)
 						_, err := s.listener.WriteToUDP(marMessage, messageAddr)
 						if err != nil {
-							log.Println(err)
 						}
 
 						tmp = append(tmp, m.SeqNum)
@@ -242,7 +240,6 @@ func (s *server) mainRoutine() {
 						marMessage, _ := json.Marshal(m)
 						_, err := s.listener.WriteToUDP(marMessage, messageAddr)
 						if err != nil {
-							log.Println(err)
 						}
 						// update unack count
 						s.windows[connId] = append(s.windows[connId], m)
@@ -271,12 +268,10 @@ func (s *server) mainRoutine() {
 				ackMessage := *NewAck(clientIdCounter, sn)
 				ackMessageMar, err := json.Marshal(ackMessage)
 				if err != nil {
-					log.Println(err)
 				}
 
 				_, err = s.listener.WriteToUDP(ackMessageMar, messageAddr)
 				if err != nil {
-					log.Println(err)
 				}
 				if _, exist := s.connectionDupMap[packet.packetAddr.String()]; exist {
 					continue
@@ -312,7 +307,6 @@ func (s *server) mainRoutine() {
 				ackMessage := *NewAck(connId, sn)
 				ackMessageMar, err := json.Marshal(ackMessage)
 				if err != nil {
-					log.Println(err)
 				}
 				_, err = s.listener.WriteToUDP(ackMessageMar, messageAddr)
 
@@ -325,7 +319,6 @@ func (s *server) mainRoutine() {
 				s.idleEpochElapsed[connId] = 0
 
 				if err != nil {
-					log.Println(err)
 				}
 
 				// if received message match the read counter, just add it to read_list
@@ -370,7 +363,6 @@ func (s *server) mainRoutine() {
 					_, err := s.listener.WriteToUDP(marMessage, serverMessageInfo.packetAddr)
 
 					if err != nil {
-						log.Println(err)
 					}
 					s.isMessageSent[connId] = true
 					s.messageBackoff[MessageId{connId, seqNum}] = &BackOffInfo{0, 0, 0, message}
@@ -412,12 +404,10 @@ func (s *server) mainRoutine() {
 					ackMessage := *NewAck(k, 0)
 					ackMessageMar, err := json.Marshal(ackMessage)
 					if err != nil {
-						log.Println(err)
 					}
 
 					_, err = s.listener.WriteToUDP(ackMessageMar, s.addrAndSeqNum[k].packetAddr)
 					if err != nil {
-						log.Println(err)
 					}
 
 				}
@@ -437,7 +427,6 @@ func (s *server) mainRoutine() {
 					_, err := s.listener.WriteToUDP(marMessage, addr)
 
 					if err != nil {
-						log.Println(err)
 					}
 					if s.messageBackoff[k].currentBackoff == 0 {
 						s.messageBackoff[k].currentBackoff++
@@ -535,14 +524,12 @@ func (s *server) readRoutine() {
 	for {
 		n, addr, err := s.listener.ReadFromUDP(readMessage)
 		if err != nil {
-			log.Println(err)
 			return
 		}
 
 		var message Message
 		err = json.Unmarshal(readMessage[:n], &message)
 		if err != nil {
-			log.Println(err)
 		}
 		if message.Type == MsgData {
 			if message.Size == len(message.Payload) {
