@@ -161,7 +161,7 @@ func (s *server) mainRoutine() {
 				if _, exist := s.idleEpochElapsed[connId]; exist {
 					s.idleEpochElapsed[connId] = 0
 				} else {
-					continue // TODO: check if this can be removed
+					continue
 				}
 
 				// The above code is removing an element from a slice and deleting a key-value pair from a map.
@@ -384,7 +384,7 @@ func (s *server) mainRoutine() {
 
 		case <-ticker.C:
 			// add epoch to every client state count
-			for k, _ := range s.idleEpochElapsed {
+			for k := range s.idleEpochElapsed {
 				s.idleEpochElapsed[k]++
 				// end the connection
 				if s.idleEpochElapsed[k] >= s.params.EpochLimit {
@@ -479,7 +479,7 @@ func (s *server) endConnection(connId int) {
 	delete(s.connectionDupMap, s.addrAndSeqNum[connId].packetAddr.String())
 	var tmp []MessageId
 
-	for k, _ := range s.messageBackoff {
+	for k := range s.messageBackoff {
 		if k.connId == connId {
 			tmp = append(tmp, k)
 		}

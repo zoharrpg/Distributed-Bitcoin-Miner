@@ -171,7 +171,7 @@ func (c *client) mainRoutine() {
 			}
 			isMessageSent = false
 			if (idleEpochTime >= c.params.EpochLimit) && (len(c.receivedRecord) == 0) && (len(c.readPayloads) == 0) {
-				// c.conn.Close() // TODO: check if it's redundant
+				c.conn.Close()
 				close(c.readPayloads)
 				c.closePending <- struct{}{}
 				return
