@@ -36,12 +36,11 @@ type server struct {
 	connectionDupMap map[string]bool            // // The above code is declaring a variable called `connectionDupMap` which is a map with string keys and boolean values.
 	idleEpochElapsed map[int]int                //connid to epoch
 	messageBackoff   map[MessageId]*BackOffInfo // The above code is declaring a variable named "messageBackoff" which is a map with keys of type "MessageId" and values of type "*BackOffInfo".
-
-	closePending chan int // wait for message sent and acknowledgement.
-	closeId      int      // a variable called "closeId" of type int.
-	isClosed     bool     // a boolean variable named "isClosed" and initializing it to false.
-	droppedId    chan int // drop connection id channel
-	params       *Params  // params for server
+	closePending     chan int                   // wait for message sent and acknowledgement.
+	closeId          int                        // a variable called "closeId" of type int.
+	isClosed         bool                       // a boolean variable named "isClosed" and initializing it to false.
+	droppedId        chan int                   // drop connection id channel
+	params           *Params                    // params for server
 }
 
 // NewServer creates, initiates, and returns a new server. This function should
@@ -138,10 +137,7 @@ func (s *server) mainRoutine() {
 	// value periodically based on the specified duration. In this case, the ticker will send a value
 	// every `s.params.EpochMillis` milliseconds.
 	ticker := time.NewTicker(time.Duration(s.params.EpochMillis) * time.Millisecond)
-	// The above code is declaring a variable called `clientIdCounter` and initializing it with a value of
-	// 1.
-	// The above code is declaring a variable called `clientIdCounter` and initializing it with a value of
-	// 1.
+	// The above code is declaring a variable called `clientIdCounter` and initializing it with a value of 1
 	clientIdCounter := 1
 	// The above code is using the `defer` keyword to schedule the `Stop()` method of the `ticker` object
 	// to be called when the surrounding function returns. This is typically used to ensure that resources

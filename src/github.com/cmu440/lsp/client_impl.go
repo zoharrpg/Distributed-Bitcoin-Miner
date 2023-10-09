@@ -88,6 +88,7 @@ func NewClient(hostport string, initialSeqNum int, params *Params) (Client, erro
 	return &c, nil
 }
 
+// manageReceived responsible for managing the received messages from the server
 func (c *client) manageReceived(receiveSeqNum int) int {
 	if len(c.readPayloads) != 0 {
 		return receiveSeqNum
@@ -112,6 +113,8 @@ func (c *client) writeToServer(message Message) {
 	}
 }
 
+// manageToSend responsible for managing the unsent messages
+// check whether there is any unsent message that is able to send
 func (c *client) manageToSend() bool {
 	isMessageSent := false
 	for {
@@ -132,6 +135,7 @@ func (c *client) manageToSend() bool {
 	return isMessageSent
 }
 
+// clientCloseCheck checks whether the client is able to close
 func (c *client) clientCloseCheck() bool {
 	if len(c.unsentMessages) == 0 && len(c.receivedRecord) == 0 && len(c.readPayloads) == 0 {
 		c.closePending <- struct{}{}
@@ -170,7 +174,7 @@ func (c *client) mainRoutine() {
 			}
 			isMessageSent = false
 			if (idleEpochTime >= c.params.EpochLimit) && (len(c.receivedRecord) == 0) && (len(c.readPayloads) == 0) {
-				c.conn.Close() // TODO: check if it's redundant
+				// c.conn.Close() // TODO: check if it's redundant
 				close(c.readPayloads)
 				c.closePending <- struct{}{}
 				return
@@ -208,11 +212,8 @@ func (c *client) mainRoutine() {
 				isMessageSent = true
 			}
 
-		case message, ok := <-c.rawMessages:
+		case message := <-c.rawMessages:
 			idleEpochTime = 0
-			if !ok {
-				return // TODO: check if it would successfully return
-			}
 			switch message.Type {
 			case MsgConnect:
 				continue
@@ -266,7 +267,6 @@ func (c *client) mainRoutine() {
 					}
 				}
 				receiveSeqNum = c.manageReceived(receiveSeqNum)
-				// send ack
 				ackMessage := *NewAck(c.connId, message.SeqNum)
 				c.writeToServer(ackMessage)
 			}
