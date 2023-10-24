@@ -66,7 +66,54 @@ func main() {
 
 	defer miner.Close()
 
+	for {
+		message, err := ReadMessage(miner)
+		if err != nil {
+			LOGF.Printf("[Miner %v] Error: %v\n", miner.ConnID(), err)
+			break
+		} else {
+			if message.Type == bitcoin.Request {
+				go process(miner, message.Data, message.Lower, message.Upper)
+			}
+		}
+	}
+
 	// TODO: implement this!
+}
+func process(client lsp.Client, data string, lower uint64, upper uint64) {
+	nonce, minHash := lower, bitcoin.Hash(data, lower)
+
+	for i := lower + 1; i <= upper; i++ {
+		hash := bitcoin.Hash(data, i)
+		if minHash > hash {
+			minHash = hash
+			nonce = i
+		}
+	}
+	result := bitcoin.NewResult(minHash, nonce)
+	result.Lower = lower
+	result.Upper = upper
+	err := SendMessage(client, *result)
+
+	if err != nil {
+		fmt.Printf("[Miner %v] Error: %v\n", client.ConnID(), err)
+	} else {
+		fmt.Printf("[Miner %v] Send Result Back to Server: %v, %v\n", client.ConnID(), minHash, nonce)
+	}
+}
+func ReadMessage(client lsp.Client) (bitcoin.Message, error) {
+	payload, err := client.Read()
+	if err != nil {
+		return bitcoin.Message{}, err
+	}
+	var message bitcoin.Message
+	err = json.Unmarshal(payload, &message)
+	if err != nil {
+		fmt.Println("Unmarshal error")
+		return bitcoin.Message{}, err
+	}
+	return message, nil
+
 }
 
 func SendMessage(client lsp.Client, message bitcoin.Message) error {
