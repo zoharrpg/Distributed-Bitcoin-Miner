@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"github.com/cmu440/bitcoin"
 	"log"
 	"math"
 	"math/rand"
@@ -17,9 +19,20 @@ func joinWithServer(hostport string) (lsp.Client, error) {
 	seed := rand.NewSource(time.Now().UnixNano())
 	isn := rand.New(seed).Intn(int(math.Pow(2, 8)))
 
+	client, err := lsp.NewClient(hostport, isn, lsp.NewParams())
+	if err != nil {
+		return nil, err
+	}
+	joinMessage := *bitcoin.NewJoin()
+
+	err = SendMessage(client, joinMessage)
+	if err != nil {
+		fmt.Println("Send message error")
+		return nil, err
+	}
 	// TODO: implement this!
 
-	return nil, nil
+	return client, nil
 }
 
 var LOGF *log.Logger
@@ -54,4 +67,17 @@ func main() {
 	defer miner.Close()
 
 	// TODO: implement this!
+}
+
+func SendMessage(client lsp.Client, message bitcoin.Message) error {
+	var packet []byte
+	packet, err := json.Marshal(message)
+	if err != nil {
+		return err
+	}
+	err = client.Write(packet)
+	if err != nil {
+		return err
+	}
+	return nil
 }

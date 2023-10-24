@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"github.com/cmu440/bitcoin"
 	"log"
 	"math"
 	"math/rand"
@@ -50,12 +52,35 @@ func main() {
 	}
 
 	defer client.Close()
+	request := bitcoin.NewRequest(message, 0, maxNonce)
+	packet, err := json.Marshal(request)
+	if err != nil {
+		fmt.Println("error")
+		printDisconnected()
+		return
+	}
+	// send init request
+	client.Write(packet)
 
-	_ = message  // Keep compiler happy. Please remove!
-	_ = maxNonce // Keep compiler happy. Please remove!
-	// TODO: implement this!
+	// get message from serve
 
-	printResult(0, 0)
+	payload, err := client.Read()
+
+	if err != nil {
+		fmt.Println("error")
+		printDisconnected()
+		return
+	}
+
+	var result bitcoin.Message
+	err = json.Unmarshal(payload, &result)
+	if err != nil {
+		fmt.Println("Unmarshal error")
+		printDisconnected()
+		return
+	}
+
+	printResult(result.Hash, result.Nonce)
 }
 
 // printResult prints the final result to stdout.
