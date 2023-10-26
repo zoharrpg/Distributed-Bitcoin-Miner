@@ -5,3 +5,7 @@ server
 .idea
 checkpoint.out
 lsp.zip
+clientLog.txt
+minerLog.txt
+serverLog.txt
+cmu440.zip

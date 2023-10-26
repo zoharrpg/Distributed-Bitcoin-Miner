@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"github.com/cmu440/bitcoin"
 	"log"
 	"math"
 	"math/rand"
@@ -17,9 +19,19 @@ func joinWithServer(hostport string) (lsp.Client, error) {
 	seed := rand.NewSource(time.Now().UnixNano())
 	isn := rand.New(seed).Intn(int(math.Pow(2, 8)))
 
-	// TODO: implement this!
+	client, err := lsp.NewClient(hostport, isn, lsp.NewParams())
+	if err != nil {
+		return nil, err
+	}
+	joinMessage := *bitcoin.NewJoin()
 
-	return nil, nil
+	err = SendMessage(client, joinMessage)
+	if err != nil {
+		fmt.Println("Send message error")
+		return nil, err
+	}
+
+	return client, nil
 }
 
 var LOGF *log.Logger
@@ -53,5 +65,62 @@ func main() {
 
 	defer miner.Close()
 
-	// TODO: implement this!
+	for {
+		message, err := ReadMessage(miner)
+		if err != nil {
+			break
+		} else {
+			if message.Type == bitcoin.Request {
+				go process(miner, message.Data, message.Lower, message.Upper)
+			}
+		}
+	}
+}
+
+func process(client lsp.Client, data string, lower uint64, upper uint64) {
+	nonce, minHash := lower, bitcoin.Hash(data, lower)
+
+	for i := lower + 1; i <= upper; i++ {
+		hash := bitcoin.Hash(data, i)
+		if minHash > hash {
+			minHash = hash
+			nonce = i
+		}
+	}
+	result := bitcoin.NewResult(minHash, nonce)
+	result.Lower = lower
+	result.Upper = upper
+	err := SendMessage(client, *result)
+
+	if err != nil {
+		fmt.Printf("[Miner %v] Error: %v\n", client.ConnID(), err)
+	} else {
+		fmt.Printf("[Miner %v] Send Result Back to Server: %v, %v\n", client.ConnID(), minHash, nonce)
+	}
+}
+
+func ReadMessage(client lsp.Client) (bitcoin.Message, error) {
+	payload, err := client.Read()
+	if err != nil {
+		return bitcoin.Message{}, err
+	}
+	var message bitcoin.Message
+	err = json.Unmarshal(payload, &message)
+	if err != nil {
+		return bitcoin.Message{}, err
+	}
+	return message, nil
+}
+
+func SendMessage(client lsp.Client, message bitcoin.Message) error {
+	var packet []byte
+	packet, err := json.Marshal(message)
+	if err != nil {
+		return err
+	}
+	err = client.Write(packet)
+	if err != nil {
+		return err
+	}
+	return nil
 }
