@@ -55,7 +55,6 @@ func main() {
 	request := bitcoin.NewRequest(message, 0, maxNonce)
 	packet, err := json.Marshal(request)
 	if err != nil {
-		fmt.Println("error")
 		printDisconnected()
 		return
 	}
@@ -63,11 +62,9 @@ func main() {
 	client.Write(packet)
 
 	// get message from serve
-
 	payload, err := client.Read()
 
 	if err != nil {
-		fmt.Println("error")
 		printDisconnected()
 		return
 	}
@@ -75,8 +72,6 @@ func main() {
 	var result bitcoin.Message
 	err = json.Unmarshal(payload, &result)
 	if err != nil {
-		fmt.Println("Unmarshal error")
-		printDisconnected()
 		return
 	}
 

@@ -30,7 +30,6 @@ func joinWithServer(hostport string) (lsp.Client, error) {
 		fmt.Println("Send message error")
 		return nil, err
 	}
-	// TODO: implement this!
 
 	return client, nil
 }
@@ -69,7 +68,6 @@ func main() {
 	for {
 		message, err := ReadMessage(miner)
 		if err != nil {
-			LOGF.Printf("[Miner %v] Error: %v\n", miner.ConnID(), err)
 			break
 		} else {
 			if message.Type == bitcoin.Request {
@@ -77,9 +75,8 @@ func main() {
 			}
 		}
 	}
-
-	// TODO: implement this!
 }
+
 func process(client lsp.Client, data string, lower uint64, upper uint64) {
 	nonce, minHash := lower, bitcoin.Hash(data, lower)
 
@@ -101,6 +98,7 @@ func process(client lsp.Client, data string, lower uint64, upper uint64) {
 		fmt.Printf("[Miner %v] Send Result Back to Server: %v, %v\n", client.ConnID(), minHash, nonce)
 	}
 }
+
 func ReadMessage(client lsp.Client) (bitcoin.Message, error) {
 	payload, err := client.Read()
 	if err != nil {
@@ -109,11 +107,9 @@ func ReadMessage(client lsp.Client) (bitcoin.Message, error) {
 	var message bitcoin.Message
 	err = json.Unmarshal(payload, &message)
 	if err != nil {
-		fmt.Println("Unmarshal error")
 		return bitcoin.Message{}, err
 	}
 	return message, nil
-
 }
 
 func SendMessage(client lsp.Client, message bitcoin.Message) error {
